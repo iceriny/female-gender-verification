@@ -1,6 +1,11 @@
 import { useLLMStore } from '../store/LLMStore'
-import type { Question } from '../store/questionStore'
-import { PROMPT_GENERATE, PROMPT_EVALUATE } from '../const/prompt'
+import type { Question, FollowUpQuestion } from '../store/questionStore'
+import { useQuestionStore } from '../store/questionStore'
+import {
+    PROMPT_GENERATE,
+    PROMPT_EVALUATE,
+    PROMPT_FOLLOWUP,
+} from '../const/prompt'
 import {
     dbg,
     dbgGroup,
@@ -18,10 +23,21 @@ export interface LLMQaItem {
     single_confidence?: number
 }
 
+export interface LLMFollowUpItem {
+    originalIndex: number
+    originalQuestion: string
+    originalAnswer: string
+    followUpQuestion: string
+}
+
 export interface LLMStructuredResult {
     QA: LLMQaItem[]
     confidence?: number
     pass?: boolean
+}
+
+export interface LLMFollowUpResult {
+    followUps: LLMFollowUpItem[]
 }
 
 export interface EvaluationResult {
@@ -55,6 +71,25 @@ const JSON_SCHEMA_DESCRIPTION = `你必须严格按照以下 JSON 结构输出�
 - confidence: 综合置信度(0-1)，评估时必填
 - pass: 是否通过验证，评估时必填`
 
+const JSON_SCHEMA_FOLLOWUP = `你必须严格按照以下 JSON 结构输出，不要输出除 JSON 之外的任何文字：
+{
+  "followUps": [
+    {
+      "originalIndex": 题目序号(1-based),
+      "originalQuestion": "原始题目",
+      "originalAnswer": "用户原始回答",
+      "followUpQuestion": "你的追问"
+    }
+  ]
+}
+
+字段说明:
+- followUps: 必填，追问数组，包含 2-3 条追问
+- originalIndex: 原始题目序号（从1开始）
+- originalQuestion: 原始题目文本
+- originalAnswer: 用户的原始回答
+- followUpQuestion: 基于用户回答设计的追问`
+
 /* ── 辅助函数 ── */
 
 function jsonModePrefix(): string {
@@ -64,6 +99,16 @@ function jsonModePrefix(): string {
         '禁止在 JSON 值中包含多余转义或尾随逗号。',
         '',
         JSON_SCHEMA_DESCRIPTION,
+    ].join('\n')
+}
+
+function jsonModePrefixFollowUp(): string {
+    return [
+        '你是一个只输出 JSON 的助手。',
+        '严格输出合法 JSON 对象。禁止输出任何解释、Markdown 格式、代码块围栏、注释或多余文字。',
+        '禁止在 JSON 值中包含多余转义或尾随逗号。',
+        '',
+        JSON_SCHEMA_FOLLOWUP,
     ].join('\n')
 }
 
@@ -108,6 +153,39 @@ function ensureStructured(rawParsed: unknown): LLMStructuredResult | null {
             typeof obj.confidence === 'number' ? obj.confidence : undefined,
         pass: typeof obj.pass === 'boolean' ? obj.pass : undefined,
     }
+}
+
+function ensureFollowUps(rawParsed: unknown): LLMFollowUpItem[] {
+    if (!rawParsed || typeof rawParsed !== 'object') return []
+    const obj = rawParsed as Record<string, unknown>
+
+    const raw = Array.isArray(obj.followUps) ? obj.followUps : []
+    return raw
+        .map((x: unknown) => {
+            if (!x || typeof x !== 'object') return null
+            const item = x as Record<string, unknown>
+            const followUpQuestion =
+                typeof item.followUpQuestion === 'string'
+                    ? item.followUpQuestion.trim()
+                    : ''
+            if (!followUpQuestion) return null
+            return {
+                originalIndex:
+                    typeof item.originalIndex === 'number'
+                        ? item.originalIndex
+                        : 0,
+                originalQuestion:
+                    typeof item.originalQuestion === 'string'
+                        ? item.originalQuestion
+                        : '',
+                originalAnswer:
+                    typeof item.originalAnswer === 'string'
+                        ? item.originalAnswer
+                        : '',
+                followUpQuestion,
+            }
+        })
+        .filter(Boolean) as LLMFollowUpItem[]
 }
 
 /* ── 公开 API ── */
@@ -186,19 +264,124 @@ export async function generateQuestionsViaLLM(
 }
 
 /**
- * 调用 LLM 评估用户的答案
+ * 调用 LLM 生成追问题目（基于用户第一轮回答）
+ */
+export async function generateFollowUpViaLLM(
+    questions: Question[]
+): Promise<FollowUpQuestion[]> {
+    const store = useLLMStore.getState()
+
+    useLLMStore.setState({ streamingPhase: '生成追问' })
+
+    const qaForLLM = questions.map((q, idx) => ({
+        index: idx + 1,
+        Q: q.question,
+        userAnswer: q.answer || '（未作答）',
+    }))
+
+    const systemContent = [
+        jsonModePrefixFollowUp(),
+        '',
+        '--- 以下是你的追问任务 ---',
+        '',
+        PROMPT_FOLLOWUP,
+    ].join('\n')
+
+    const userContent = [
+        '以下是用户第一轮的题目与回答，请选择 2-3 道进行追问：',
+        '',
+        JSON.stringify(qaForLLM, null, 2),
+        '',
+        '请严格按照 JSON 格式返回追问结果。',
+    ].join('\n')
+
+    const messages = [
+        { role: 'system' as const, content: systemContent },
+        { role: 'user' as const, content: userContent },
+    ]
+
+    dbgGroup('generateFollowUpViaLLM')
+    dbg('原始题目数:', questions.length)
+    dbgGroupEnd()
+
+    dbgTime('生成追问')
+    const res = await store.request(messages, {
+        jsonMode: true,
+        max_tokens: 2048,
+        temperature: 0.7,
+    })
+    dbgTimeEnd('生成追问')
+
+    let followUps: LLMFollowUpItem[] = []
+    if (res.parsed) {
+        followUps = ensureFollowUps(res.parsed)
+    }
+    if (followUps.length === 0 && res.content) {
+        dbgWarn('parsed 为空，尝试手动解析追问 content…')
+        try {
+            followUps = ensureFollowUps(safeJsonParse(res.content))
+        } catch {
+            dbgWarn('追问手动解析也失败')
+        }
+    }
+
+    if (followUps.length === 0) {
+        dbgWarn('未获取到有效追问')
+        useLLMStore.setState({ streamingPhase: '' })
+        return []
+    }
+
+    const result: FollowUpQuestion[] = followUps.map((fu) => ({
+        originalIndex: fu.originalIndex,
+        originalQuestion: fu.originalQuestion,
+        originalAnswer: fu.originalAnswer,
+        followUpQuestion: fu.followUpQuestion,
+        followUpAnswer: '',
+    }))
+
+    dbgGroup(`成功生成 ${result.length} 条追问`)
+    result.forEach((fu, i) =>
+        dbg(
+            `  ${i + 1}. [原题${fu.originalIndex}] ${fu.followUpQuestion}`
+        )
+    )
+    dbgGroupEnd()
+
+    useLLMStore.setState({ streamingPhase: '' })
+    return result
+}
+
+/**
+ * 调用 LLM 评估用户的答案（含行为数据和追问数据）
  */
 export async function evaluateAnswersViaLLM(
     questions: Question[]
 ): Promise<EvaluationResult | null> {
     const store = useLLMStore.getState()
+    const qStore = useQuestionStore.getState()
 
     useLLMStore.setState({ streamingPhase: '评估答案' })
 
+    // 构建包含行为数据的题目视图
     const qaUserView = questions.map((q) => ({
         Q: q.question,
         userAnswer: q.answer || '（未作答）',
+        timeSpent: q.timeSpent ?? null,
     }))
+
+    // 构建追问数据
+    const followUps = qStore.followUpQuestions
+    const followUpView =
+        followUps.length > 0
+            ? followUps.map((fu) => ({
+                  originalIndex: fu.originalIndex,
+                  originalQuestion: fu.originalQuestion,
+                  originalAnswer: fu.originalAnswer,
+                  followUpQuestion: fu.followUpQuestion,
+                  followUpAnswer: fu.followUpAnswer || '（未作答）',
+                  timeSpent: fu.timeSpent ?? null,
+              }))
+            : null
 
     const systemContent = [
         jsonModePrefix(),
@@ -210,13 +393,31 @@ export async function evaluateAnswersViaLLM(
         '请对以下用户回答逐题评估，并给出完整的 JSON 结果（包含 QA、confidence、pass）。',
     ].join('\n')
 
-    const userContent = [
+    const userParts = [
         '以下是用户的题目与回答，请逐题评估：',
         '',
         JSON.stringify(qaUserView, null, 2),
+    ]
+
+    // 附带行为数据
+    userParts.push(
         '',
-        '请严格按照 JSON Schema 返回评估结果。',
-    ].join('\n')
+        `行为数据：答题期间页面切换次数 = ${qStore.tabSwitchCount}`
+    )
+
+    // 附带追问数据
+    if (followUpView) {
+        userParts.push(
+            '',
+            '以下是追问环节的题目与回答：',
+            '',
+            JSON.stringify(followUpView, null, 2)
+        )
+    }
+
+    userParts.push('', '请严格按照 JSON Schema 返回评估结果。')
+
+    const userContent = userParts.join('\n')
 
     const messages = [
         { role: 'system' as const, content: systemContent },
@@ -225,7 +426,10 @@ export async function evaluateAnswersViaLLM(
 
     dbgGroup('evaluateAnswersViaLLM')
     dbg('题目数:', questions.length)
+    dbg('追问数:', followUps.length)
+    dbg('页面切换:', qStore.tabSwitchCount)
     dbg('用户作答:', qaUserView)
+    if (followUpView) dbg('追问作答:', followUpView)
     dbgGroupEnd()
 
     dbgTime('评估答案')
