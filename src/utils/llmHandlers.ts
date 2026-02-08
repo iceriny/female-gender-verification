@@ -1,6 +1,16 @@
 import { useLLMStore } from '../store/LLMStore'
 import type { Question } from '../store/questionStore'
-import { PROMPT_SYSTEM } from '../const/prompt'
+import { PROMPT_GENERATE, PROMPT_EVALUATE } from '../const/prompt'
+import {
+    dbg,
+    dbgGroup,
+    dbgGroupEnd,
+    dbgWarn,
+    dbgTime,
+    dbgTimeEnd,
+} from './debug'
+
+/* ── 类型定义 ── */
 
 export interface LLMQaItem {
     Q: string
@@ -14,163 +24,252 @@ export interface LLMStructuredResult {
     pass?: boolean
 }
 
-const JSON_SCHEMA_TEXT = `{
-  "type": "object",
-  "properties": {
-    "QA": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "Q": { "type": "string" },
-          "A": { "type": "string" },
-          "single_confidence": { "type": "number" }
-        },
-        "required": ["Q"],
-        "propertyOrdering": ["Q", "A", "single_confidence"]
-      }
-    },
-    "confidence": { "type": "number" },
-    "pass": { "type": "boolean" }
-  },
-  "required": ["QA"],
-  "propertyOrdering": ["QA", "confidence", "pass"]
-}`
-
-function buildJsonModeSystemPrompt(): string {
-    return [
-        'You are a helpful assistant designed to output JSON only.',
-        '严格输出合法 JSON。不要返回除 JSON 之外的任何文字、解释、Markdown、代码块围栏或注释。',
-        '输出必须是一个完整的 JSON 对象，且字段与类型需遵循下列 JSON Schema。',
-        '字段顺序尽量遵循 propertyOrdering 的顺序（若模型不保证顺序也必须可被机器解析）。',
-        '请勿在值中包含多余的转义或尾随逗号。',
-        'Schema: ```json',
-        JSON_SCHEMA_TEXT,
-        '```',
-    ].join('\n')
-}
-
-function ensureStructured(result: unknown): LLMStructuredResult | null {
-    if (!result || typeof result !== 'object') return null
-    const obj = result as { [k: string]: unknown }
-    const qa = Array.isArray(obj.QA) ? (obj.QA as unknown[]) : []
-    const QA: LLMQaItem[] = qa
-        .map((x) => {
-            if (!x || typeof x !== 'object') return null
-            const item = x as { [k: string]: unknown }
-            const Q = typeof item.Q === 'string' ? item.Q.trim() : ''
-            const A = typeof item.A === 'string' ? item.A : undefined
-            const sc =
-                typeof item.single_confidence === 'number'
-                    ? item.single_confidence
-                    : undefined
-            if (!Q) return null
-            return { Q, A, single_confidence: sc }
-        })
-        .filter(Boolean) as LLMQaItem[]
-
-    const confidence =
-        typeof (obj as { confidence?: unknown }).confidence === 'number'
-            ? (obj as { confidence: number }).confidence
-            : undefined
-    const pass =
-        typeof (obj as { pass?: unknown }).pass === 'boolean'
-            ? (obj as { pass: boolean }).pass
-            : undefined
-
-    if (QA.length === 0) return null
-    return { QA, confidence, pass }
-}
-
-export async function generateQuestionsViaLLM(count = 10): Promise<Question[]> {
-    const { request } = useLLMStore.getState()
-    const system = [
-        buildJsonModeSystemPrompt(),
-        '以下是场景与出题要求：',
-        PROMPT_SYSTEM,
-        `只返回 JSON，不要任何额外文本。题目数量：${count}。`,
-        'QA 中每个元素至少包含字段 Q（问题文案）。初次生成时可不返回 A 与 single_confidence。',
-    ].join('\n\n')
-
-    const res = await request(
-        [
-            { role: 'system', content: system },
-            { role: 'user', content: '请生成题目，严格以 JSON 返回。' },
-        ],
-        { jsonMode: true, max_tokens: 2048 }
-    )
-
-    const structured = ensureStructured(res.parsed)
-    if (!structured) return []
-    return structured.QA.map((item, idx) => ({
-        id: idx + 1,
-        question: item.Q,
-        answer: '',
-        confidence: 0,
-    }))
-}
-
 export interface EvaluationResult {
     questions: Question[]
     overallConfidence: number
     passed: boolean
     referenceQA: { Q: string; A?: string; single_confidence?: number }[]
+    reasoningContent?: string
 }
 
+/* ── JSON Schema（硅基流动 json_object 模式） ── */
+
+const JSON_SCHEMA_DESCRIPTION = `你必须严格按照以下 JSON 结构输出，不要输出除 JSON 之外的任何文字：
+{
+  "QA": [
+    {
+      "Q": "题目文本",
+      "A": "参考答案（生成题目时可省略）",
+      "single_confidence": 0.0到1.0之间的数字（生成题目时可省略）
+    }
+  ],
+  "confidence": 0.0到1.0之间的数字（生成题目时可省略）,
+  "pass": true或false（生成题目时可省略）
+}
+
+字段说明:
+- QA: 必填，题目数组
+- QA[].Q: 必填，题目内容
+- QA[].A: 参考答案，评估时必填
+- QA[].single_confidence: 单题置信度(0-1)，评估时必填
+- confidence: 综合置信度(0-1)，评估时必填
+- pass: 是否通过验证，评估时必填`
+
+/* ── 辅助函数 ── */
+
+function jsonModePrefix(): string {
+    return [
+        '你是一个只输出 JSON 的助手。',
+        '严格输出合法 JSON 对象。禁止输出任何解释、Markdown 格式、代码块围栏、注释或多余文字。',
+        '禁止在 JSON 值中包含多余转义或尾随逗号。',
+        '',
+        JSON_SCHEMA_DESCRIPTION,
+    ].join('\n')
+}
+
+function safeJsonParse(text: string): unknown {
+    let cleaned = text.trim()
+    const fenceMatch = cleaned.match(
+        /^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/
+    )
+    if (fenceMatch) {
+        cleaned = fenceMatch[1].trim()
+    }
+    return JSON.parse(cleaned)
+}
+
+function ensureStructured(rawParsed: unknown): LLMStructuredResult | null {
+    if (!rawParsed || typeof rawParsed !== 'object') return null
+    const obj = rawParsed as Record<string, unknown>
+
+    const qaRaw = Array.isArray(obj.QA) ? obj.QA : []
+    const QA: LLMQaItem[] = qaRaw
+        .map((x: unknown) => {
+            if (!x || typeof x !== 'object') return null
+            const item = x as Record<string, unknown>
+            const Q = typeof item.Q === 'string' ? item.Q.trim() : ''
+            if (!Q) return null
+            return {
+                Q,
+                A: typeof item.A === 'string' ? item.A : undefined,
+                single_confidence:
+                    typeof item.single_confidence === 'number'
+                        ? item.single_confidence
+                        : undefined,
+            }
+        })
+        .filter(Boolean) as LLMQaItem[]
+
+    if (QA.length === 0) return null
+
+    return {
+        QA,
+        confidence:
+            typeof obj.confidence === 'number' ? obj.confidence : undefined,
+        pass: typeof obj.pass === 'boolean' ? obj.pass : undefined,
+    }
+}
+
+/* ── 公开 API ── */
+
+/**
+ * 调用 LLM 生成验证题目
+ */
+export async function generateQuestionsViaLLM(
+    count = 10
+): Promise<Question[]> {
+    const store = useLLMStore.getState()
+
+    // 设置流式阶段标签
+    useLLMStore.setState({ streamingPhase: '生成题目' })
+
+    const systemContent = [
+        jsonModePrefix(),
+        '',
+        '--- 以下是你的出题任务 ---',
+        '',
+        PROMPT_GENERATE,
+        '',
+        `请生成 ${count} 道题目。`,
+        '只需返回 QA 数组，每个元素包含 Q 字段即可，无需 A、single_confidence、confidence、pass。',
+    ].join('\n')
+
+    const messages = [
+        { role: 'system' as const, content: systemContent },
+        {
+            role: 'user' as const,
+            content: `请生成 ${count} 道女性性别验证题目，严格按 JSON 格式返回。`,
+        },
+    ]
+
+    dbgGroup('generateQuestionsViaLLM')
+    dbg('题目数量:', count)
+    dbg('system prompt 长度:', systemContent.length)
+    dbgGroupEnd()
+
+    dbgTime('生成题目')
+    const res = await store.request(messages, {
+        jsonMode: true,
+        max_tokens: 3072,
+        temperature: 0.85,
+    })
+    dbgTimeEnd('生成题目')
+
+    let structured = ensureStructured(res.parsed)
+    if (!structured && res.content) {
+        dbgWarn('parsed 为空，尝试手动解析 content…')
+        try {
+            structured = ensureStructured(safeJsonParse(res.content))
+        } catch {
+            dbgWarn('手动解析也失败')
+        }
+    }
+
+    if (!structured || structured.QA.length === 0) {
+        dbgWarn('未获取到有效题目，content:', res.content.slice(0, 500))
+        throw new Error('LLM 未返回有效题目，请重试')
+    }
+
+    const questions = structured.QA.map((item, idx) => ({
+        id: idx + 1,
+        question: item.Q,
+        answer: '',
+        confidence: 0,
+    }))
+
+    dbgGroup(`成功生成 ${questions.length} 道题目`)
+    questions.forEach((q, i) => dbg(`  ${i + 1}. ${q.question}`))
+    dbgGroupEnd()
+
+    useLLMStore.setState({ streamingPhase: '' })
+    return questions
+}
+
+/**
+ * 调用 LLM 评估用户的答案
+ */
 export async function evaluateAnswersViaLLM(
     questions: Question[]
 ): Promise<EvaluationResult | null> {
-    const { request } = useLLMStore.getState()
+    const store = useLLMStore.getState()
+
+    useLLMStore.setState({ streamingPhase: '评估答案' })
+
     const qaUserView = questions.map((q) => ({
         Q: q.question,
-        userA: q.answer,
+        userAnswer: q.answer || '（未作答）',
     }))
 
-    const system = [
-        buildJsonModeSystemPrompt(),
-        '对用户回答进行核验：',
-        '对于每个 QA，返回：',
-        '- Q: 原题目',
-        '- A: 标准或参考答案（如为开放题，请给出合理的女性视角参考答案或答案要点）',
-        '- single_confidence: 针对该题回答判断为女性的置信度（0~1）',
-        '并在顶层给出 overall：',
-        '- confidence: 综合判断为女性的置信度（0~1）',
-        '- pass: 是否通过验证（布尔值）',
-        '严格仅输出 JSON 对象。',
+    const systemContent = [
+        jsonModePrefix(),
+        '',
+        '--- 以下是你的评估任务 ---',
+        '',
+        PROMPT_EVALUATE,
+        '',
+        '请对以下用户回答逐题评估，并给出完整的 JSON 结果（包含 QA、confidence、pass）。',
     ].join('\n')
 
-    const user = [
-        '请根据用户的作答进行判断，以下是用户的回答：',
+    const userContent = [
+        '以下是用户的题目与回答，请逐题评估：',
+        '',
         JSON.stringify(qaUserView, null, 2),
-        '仅返回符合 Schema 的 JSON。',
-    ].join('\n\n')
+        '',
+        '请严格按照 JSON Schema 返回评估结果。',
+    ].join('\n')
 
-    const res = await request(
-        [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-        ],
-        { jsonMode: true, max_tokens: 2048 }
-    )
+    const messages = [
+        { role: 'system' as const, content: systemContent },
+        { role: 'user' as const, content: userContent },
+    ]
 
-    const structured = ensureStructured(res.parsed)
-    if (!structured) return null
+    dbgGroup('evaluateAnswersViaLLM')
+    dbg('题目数:', questions.length)
+    dbg('用户作答:', qaUserView)
+    dbgGroupEnd()
 
-    const merged: Question[] = questions.map((q) => {
-        const matched = structured.QA.find(
-            (x) => x.Q.trim() === q.question.trim()
+    dbgTime('评估答案')
+    const res = await store.request(messages, {
+        jsonMode: true,
+        max_tokens: 4096,
+        temperature: 0.3,
+    })
+    dbgTimeEnd('评估答案')
+
+    let structured = ensureStructured(res.parsed)
+    if (!structured && res.content) {
+        dbgWarn('parsed 为空，尝试手动解析…')
+        try {
+            structured = ensureStructured(safeJsonParse(res.content))
+        } catch {
+            dbgWarn('手动解析也失败')
+        }
+    }
+
+    if (!structured) {
+        dbgWarn('评估失败，无有效结构化数据')
+        useLLMStore.setState({ streamingPhase: '' })
+        return null
+    }
+
+    const merged: Question[] = questions.map((q, idx) => {
+        const byIdx = structured!.QA[idx]
+        const byText = structured!.QA.find(
+            (x) =>
+                x.Q.trim() === q.question.trim() ||
+                x.Q.includes(q.question.slice(0, 15))
         )
+        const matched = byIdx || byText
         return {
             ...q,
             confidence:
                 typeof matched?.single_confidence === 'number'
                     ? matched.single_confidence
                     : q.confidence,
-            // 若需要展示参考答案，可在 UI 中使用 structured.QA
         }
     })
 
-    return {
+    const result: EvaluationResult = {
         questions: merged,
         overallConfidence:
             typeof structured.confidence === 'number'
@@ -178,5 +277,19 @@ export async function evaluateAnswersViaLLM(
                 : 0,
         passed: typeof structured.pass === 'boolean' ? structured.pass : false,
         referenceQA: structured.QA,
+        reasoningContent: res.reasoningContent,
     }
+
+    dbgGroup('评估结果')
+    dbg('总置信度:', result.overallConfidence)
+    dbg('是否通过:', result.passed)
+    result.referenceQA.forEach((qa, i) =>
+        dbg(
+            `  ${i + 1}. [${qa.single_confidence ?? '?'}] ${qa.Q} → ${qa.A ?? '(无参考)'}`
+        )
+    )
+    dbgGroupEnd()
+
+    useLLMStore.setState({ streamingPhase: '' })
+    return result
 }

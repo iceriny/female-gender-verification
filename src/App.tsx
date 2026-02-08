@@ -1,18 +1,26 @@
 import './App.css'
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import Agreement from './components/Agreement'
 import Quiz from './components/Quiz'
 import Result from './components/Result'
+import { useQuestionStore } from './store/questionStore'
 import type { EvaluationResult } from './utils/llmHandlers'
 
+type Step = 'agreement' | 'quiz' | 'result'
+
 function App() {
-    const [step, setStep] = useState<'agreement' | 'quiz' | 'result'>(
-        'agreement'
-    )
+    const [step, setStep] = useState<Step>('agreement')
     const [result, setResult] = useState<EvaluationResult | null>(null)
 
+    const handleRestart = useCallback(() => {
+        // 重置 question store
+        useQuestionStore.getState().reset()
+        setResult(null)
+        setStep('agreement')
+    }, [])
+
     return (
-        <>
+        <div className="min-h-dvh">
             {step === 'agreement' && (
                 <Agreement onAgreed={() => setStep('quiz')} />
             )}
@@ -29,13 +37,10 @@ function App() {
                     overallConfidence={result.overallConfidence}
                     passed={result.passed}
                     referenceQA={result.referenceQA}
-                    onRestart={() => {
-                        setResult(null)
-                        setStep('agreement')
-                    }}
+                    onRestart={handleRestart}
                 />
             )}
-        </>
+        </div>
     )
 }
 
