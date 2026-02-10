@@ -1,7 +1,9 @@
 import { create } from 'zustand'
+import { OpenRouter } from '@openrouter/sdk'
 import { dbg, dbgGroup, dbgGroupEnd, dbgWarn, dbgTime, dbgTimeEnd } from '../utils/debug'
 
 type ChatRole = 'system' | 'user' | 'assistant'
+export type LLMProvider = 'siliconflow' | 'openrouter'
 
 interface ChatMessage {
     role: ChatRole
@@ -18,6 +20,25 @@ interface ChatRequestBody {
     top_p?: number
     enable_thinking?: boolean
     thinking_budget?: number
+}
+
+interface ProviderConfig {
+    apiUrl: string
+    modelsUrl: string
+    defaultModel: string
+}
+
+const PROVIDER_CONFIG: Record<LLMProvider, ProviderConfig> = {
+    siliconflow: {
+        apiUrl: 'https://api.siliconflow.cn/v1/chat/completions',
+        modelsUrl: 'https://api.siliconflow.cn/v1/models',
+        defaultModel: 'deepseek-ai/DeepSeek-V3.2-Exp',
+    },
+    openrouter: {
+        apiUrl: 'https://openrouter.ai/api/v1/chat/completions',
+        modelsUrl: 'https://openrouter.ai/api/v1/models',
+        defaultModel: 'openai/gpt-5-nano',
+    },
 }
 
 interface SiliconFlowModelItem {
@@ -87,6 +108,41 @@ function hasModelsArray(
     )
 }
 
+function tryParseJson(content: string, jsonMode?: boolean): unknown {
+    if (!jsonMode || !content) return undefined
+    try {
+        return JSON.parse(content)
+    } catch {
+        const cleaned = content
+            .trim()
+            .replace(/^```(?:json)?\s*\n?/, '')
+            .replace(/\n?\s*```$/, '')
+        try {
+            return JSON.parse(cleaned)
+        } catch {
+            return undefined
+        }
+    }
+}
+
+function extractReasoningFromOpenRouterResponse(response: unknown): string | undefined {
+    if (!response || typeof response !== 'object') return undefined
+    const output = (response as { output?: unknown }).output
+    if (!Array.isArray(output)) return undefined
+
+    const chunks: string[] = []
+    for (const item of output) {
+        if (!item || typeof item !== 'object') continue
+        const maybeReasoning = (item as { reasoning?: unknown }).reasoning
+        if (typeof maybeReasoning === 'string' && maybeReasoning.trim()) {
+            chunks.push(maybeReasoning)
+        }
+    }
+
+    const merged = chunks.join('\n').trim()
+    return merged || undefined
+}
+
 /* ── SSE 流解析 ── */
 
 interface SSEParseResult {
@@ -111,7 +167,6 @@ async function parseSSEStream(
     let content = ''
     let reasoning = ''
 
-    // eslint-disable-next-line no-constant-condition
     while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -172,6 +227,8 @@ export interface LLMStore {
     setApiKey: (apiKey: string) => void
     apiUrl: string
     setApiUrl: (apiUrl: string) => void
+    provider: LLMProvider
+    setProvider: (provider: LLMProvider) => void
     apiModel: string
     setApiModel: (apiModel: string) => void
     llmModelList: string[]
@@ -198,20 +255,29 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
     setIsGenerating: (isGenerating: boolean) => set({ isGenerating }),
     apiKey: '',
     setApiKey: (apiKey: string) => set({ apiKey }),
-    apiUrl: 'https://api.siliconflow.cn/v1/chat/completions',
+    apiUrl: PROVIDER_CONFIG.siliconflow.apiUrl,
     setApiUrl: (apiUrl: string) => set({ apiUrl }),
-    apiModel: 'deepseek-ai/DeepSeek-V3.2-Exp',
+    provider: 'siliconflow',
+    setProvider: (provider: LLMProvider) =>
+        set({
+            provider,
+            apiUrl: PROVIDER_CONFIG[provider].apiUrl,
+            apiModel: PROVIDER_CONFIG[provider].defaultModel,
+            llmModelList: [],
+        }),
+    apiModel: PROVIDER_CONFIG.siliconflow.defaultModel,
     setApiModel: (apiModel: string) => set({ apiModel }),
     llmModelList: [],
     setLlmModelList: async () => {
-        const apiKey = get().apiKey
+        const { apiKey, provider } = get()
         if (!apiKey) {
             set({ llmModelList: [] })
             return
         }
-        dbg('拉取模型列表…')
+        dbg(`拉取模型列表（${provider}）…`)
         try {
-            const resp = await fetch('https://api.siliconflow.cn/v1/models', {
+            const config = PROVIDER_CONFIG[provider]
+            const resp = await fetch(config.modelsUrl, {
                 method: 'GET',
                 headers: {
                     Authorization: `Bearer ${apiKey}`,
@@ -237,7 +303,7 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
             set({ llmModelList: names })
 
             const currentModel = get().apiModel
-            if (!currentModel && names.length > 0) {
+            if (names.length > 0 && (!currentModel || !names.includes(currentModel))) {
                 set({ apiModel: names[0] })
             }
         } catch (e) {
@@ -260,8 +326,14 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
         messages: ChatMessage[],
         options?: LLMRequestOptions
     ) => {
-        const { apiUrl, apiKey, apiModel, enableThinking, thinkingBudget } =
-            get()
+        const {
+            apiUrl,
+            apiKey,
+            apiModel,
+            provider,
+            enableThinking,
+            thinkingBudget,
+        } = get()
         const useStreaming = __DEBUG__
 
         // 清空流式状态
@@ -271,9 +343,9 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
             streamingReasoning: '',
         })
 
-        const model = apiModel || 'deepseek-ai/DeepSeek-V3.2-Exp'
+        const model = apiModel || PROVIDER_CONFIG[provider].defaultModel
 
-        dbgGroup(`LLM 请求 → ${model}`)
+        dbgGroup(`LLM 请求 → ${provider} / ${model}`)
         dbg('streaming:', useStreaming)
         dbg('jsonMode:', options?.jsonMode ?? false)
         dbg('enable_thinking:', options?.enableThinking ?? enableThinking)
@@ -283,6 +355,88 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
         dbgTime('LLM 请求耗时')
 
         try {
+            if (provider === 'openrouter') {
+                if (!apiKey) throw new Error('请先填写 OpenRouter API Key')
+
+                if (options?.enableThinking ?? enableThinking) {
+                    dbgWarn('OpenRouter provider 暂不使用 enable_thinking 参数')
+                }
+
+                const client = new OpenRouter({ apiKey })
+                const result = client.callModel({
+                    model,
+                    input: messages,
+                    temperature: options?.temperature,
+                    maxOutputTokens: options?.max_tokens,
+                    topP: options?.top_p,
+                })
+
+                let content = ''
+                let reasoning = ''
+
+                if (useStreaming) {
+                    const textTask = (async () => {
+                        for await (const delta of result.getTextStream()) {
+                            content += delta
+                            set({ streamingText: content })
+                        }
+                    })()
+
+                    const reasoningTask = (async () => {
+                        try {
+                            for await (const delta of result.getReasoningStream()) {
+                                reasoning += delta
+                                set({ streamingReasoning: reasoning })
+                            }
+                        } catch {
+                            // 非推理模型可能不会产生 reasoning stream
+                        }
+                    })()
+
+                    const response = await result.getResponse()
+                    await Promise.allSettled([textTask, reasoningTask])
+
+                    const parsed = tryParseJson(content, options?.jsonMode)
+                    const reasoningContent =
+                        reasoning || extractReasoningFromOpenRouterResponse(response)
+
+                    dbgTimeEnd('LLM 请求耗时')
+                    dbgGroup('OpenRouter 流式响应完成')
+                    dbg('content 长度:', content.length)
+                    if (reasoningContent) dbg('reasoning 长度:', reasoningContent.length)
+                    if (content.length < 2000) dbg('content:', content)
+                    dbgGroupEnd()
+
+                    return {
+                        content,
+                        reasoningContent,
+                        parsed,
+                        raw: response,
+                    }
+                }
+
+                const [text, response] = await Promise.all([
+                    result.getText(),
+                    result.getResponse(),
+                ])
+                content = text || ''
+                reasoning = extractReasoningFromOpenRouterResponse(response) || ''
+
+                dbgTimeEnd('LLM 请求耗时')
+                dbgGroup('OpenRouter 非流式响应')
+                dbg('content 长度:', content.length)
+                if (content.length < 2000) dbg('content:', content)
+                if (reasoning) dbg('reasoning 长度:', reasoning.length)
+                dbgGroupEnd()
+
+                return {
+                    content,
+                    reasoningContent: reasoning || undefined,
+                    parsed: tryParseJson(content, options?.jsonMode),
+                    raw: response,
+                }
+            }
+
             const body: ChatRequestBody = {
                 model,
                 messages,
@@ -292,14 +446,17 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
             if (options?.jsonMode) {
                 body.response_format = { type: 'json_object' }
             }
-            if (typeof options?.max_tokens === 'number')
+            if (typeof options?.max_tokens === 'number') {
                 body.max_tokens = options.max_tokens
-            if (typeof options?.temperature === 'number')
+            }
+            if (typeof options?.temperature === 'number') {
                 body.temperature = options.temperature
-            if (typeof options?.top_p === 'number') body.top_p = options.top_p
+            }
+            if (typeof options?.top_p === 'number') {
+                body.top_p = options.top_p
+            }
 
-            const wantThinking =
-                options?.enableThinking ?? enableThinking
+            const wantThinking = options?.enableThinking ?? enableThinking
             body.enable_thinking = wantThinking
             if (wantThinking) {
                 const budget = options?.thinkingBudget ?? thinkingBudget
@@ -309,7 +466,7 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
             dbg('请求体:', body)
 
             const resp = await fetch(
-                apiUrl || 'https://api.siliconflow.cn/v1/chat/completions',
+                apiUrl || PROVIDER_CONFIG.siliconflow.apiUrl,
                 {
                     method: 'POST',
                     headers: {
@@ -322,14 +479,13 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
                 }
             )
 
-            /* ── 流式响应 ── */
             if (useStreaming && resp.ok && resp.body) {
                 const sseResult = await parseSSEStream(
                     resp,
-                    ({ content, reasoning }) => {
+                    ({ content: streamedContent, reasoning: streamedReasoning }) => {
                         set({
-                            streamingText: content,
-                            streamingReasoning: reasoning,
+                            streamingText: streamedContent,
+                            streamingReasoning: streamedReasoning,
                         })
                     }
                 )
@@ -343,35 +499,14 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
                 }
                 dbgGroupEnd()
 
-                let parsed: unknown = undefined
-                if (options?.jsonMode && sseResult.content) {
-                    try {
-                        parsed = JSON.parse(sseResult.content)
-                    } catch {
-                        dbgWarn('JSON 解析失败，尝试清理…')
-                        // 尝试清理 code fence
-                        const cleaned = sseResult.content
-                            .trim()
-                            .replace(/^```(?:json)?\s*\n?/, '')
-                            .replace(/\n?\s*```$/, '')
-                        try {
-                            parsed = JSON.parse(cleaned)
-                        } catch {
-                            parsed = undefined
-                        }
-                    }
-                    dbg('parsed:', parsed)
-                }
-
                 return {
                     content: sseResult.content,
                     reasoningContent: sseResult.reasoningContent || undefined,
-                    parsed,
+                    parsed: tryParseJson(sseResult.content, options?.jsonMode),
                     raw: { streaming: true },
                 }
             }
 
-            /* ── 非流式响应 / 回退 ── */
             const data = await resp.json()
             if (!resp.ok) {
                 const message =
@@ -397,17 +532,12 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
             dbg('usage:', data?.usage)
             dbgGroupEnd()
 
-            let parsed: unknown = undefined
-            if (options?.jsonMode && content) {
-                try {
-                    parsed = JSON.parse(content)
-                } catch {
-                    parsed = undefined
-                }
-                dbg('parsed:', parsed)
+            return {
+                content,
+                reasoningContent,
+                parsed: tryParseJson(content, options?.jsonMode),
+                raw: data,
             }
-
-            return { content, reasoningContent, parsed, raw: data }
         } catch (e) {
             dbgTimeEnd('LLM 请求耗时')
             throw e
@@ -420,6 +550,8 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
 interface LLMStoreHook {
     isGenerating: boolean
     setIsGenerating: (isGenerating: boolean) => void
+    provider: LLMProvider
+    setProvider: (provider: LLMProvider) => void
     apiKey: string
     setApiKey: (apiKey: string) => void
     apiModel: string
@@ -436,6 +568,8 @@ export const useLLMStoreHook: () => LLMStoreHook = () => {
     const {
         isGenerating,
         setIsGenerating,
+        provider,
+        setProvider,
         apiKey,
         setApiKey,
         apiModel,
@@ -450,6 +584,8 @@ export const useLLMStoreHook: () => LLMStoreHook = () => {
     return {
         isGenerating,
         setIsGenerating,
+        provider,
+        setProvider,
         apiKey,
         setApiKey,
         apiModel,

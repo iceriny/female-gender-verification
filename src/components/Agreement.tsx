@@ -1,5 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useLLMStoreHook, isThinkingSupported } from '../store/LLMStore'
+import {
+  useLLMStoreHook,
+  isThinkingSupported,
+  type LLMProvider,
+} from '../store/LLMStore'
 import { useLLMStore } from '../store/LLMStore'
 import { hasBuiltinApiKey, decryptBuiltinApiKey } from '../utils/secret'
 
@@ -9,6 +13,8 @@ interface AgreementProps {
 
 export default function Agreement({ onAgreed }: AgreementProps) {
   const {
+    provider,
+    setProvider,
     apiKey,
     setApiKey,
     apiModel,
@@ -26,7 +32,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
   const [modelError, setModelError] = useState<string | null>(null)
 
   /* ── 内置密钥解锁相关 ── */
-  const builtinAvailable = hasBuiltinApiKey()
+  const builtinAvailable = hasBuiltinApiKey(provider)
   const [showUnlock, setShowUnlock] = useState(false)
   const [devSecretInput, setDevSecretInput] = useState('')
   const [unlockStatus, setUnlockStatus] = useState<
@@ -34,25 +40,88 @@ export default function Agreement({ onAgreed }: AgreementProps) {
   >('idle')
   const [isBuiltinKey, setIsBuiltinKey] = useState(false)
 
-  /** 当前选中模型是否支持 thinking */
-  const modelSupportsThinking = useMemo(
-    () => isThinkingSupported(apiModel),
-    [apiModel]
-  )
+  const keyStorageKey = useCallback((p: LLMProvider) => {
+    return p === 'openrouter' ? 'or_api_key' : 'sf_api_key'
+  }, [])
 
-  // 初始化：从 localStorage 恢复 API Key
+  const modelStorageKey = useCallback((p: LLMProvider) => {
+    return p === 'openrouter' ? 'or_api_model' : 'sf_api_model'
+  }, [])
+
+  // provider 切换：恢复该 provider 的 key/model 并拉取模型
   useEffect(() => {
-    const saved = localStorage.getItem('sf_api_key') ?? ''
-    if (saved) {
-      setLocalKey(saved)
-      if (!apiKey) {
-        setApiKey(saved)
+    setIsBuiltinKey(false)
+    setUnlockStatus('idle')
+    setShowUnlock(false)
+    setModelError(null)
+
+    const savedKey = localStorage.getItem(keyStorageKey(provider)) ?? ''
+    const savedModel = localStorage.getItem(modelStorageKey(provider)) ?? ''
+    setLocalKey(savedKey)
+    setApiKey(savedKey)
+
+    if (savedModel) {
+      setApiModel(savedModel)
+    }
+
+    if (!savedKey) {
+      useLLMStore.setState({ llmModelList: [] })
+      return
+    }
+
+    setLoadingModels(true)
+    useLLMStore
+      .getState()
+      .setLlmModelList()
+      .catch(() => setModelError('获取模型列表失败'))
+      .finally(() => setLoadingModels(false))
+  }, [provider, keyStorageKey, modelStorageKey, setApiKey, setApiModel])
+
+  const providerLabel = provider === 'openrouter' ? 'OpenRouter' : '硅基流动'
+  const keyGuideUrl =
+    provider === 'openrouter'
+      ? 'https://openrouter.ai/settings/keys'
+      : 'https://cloud.siliconflow.cn/account/ak'
+
+  /** 当前选中模型是否支持 thinking */
+  const modelSupportsThinking = useMemo(() => {
+    if (provider !== 'siliconflow') return false
+    return isThinkingSupported(apiModel)
+  }, [provider, apiModel])
+
+  // 初始化：恢复 provider / key / model
+  useEffect(() => {
+    const savedProvider = localStorage.getItem('llm_provider')
+    if (savedProvider === 'siliconflow' || savedProvider === 'openrouter') {
+      if (savedProvider !== provider) {
+        setProvider(savedProvider)
+      }
+      const savedModel = localStorage.getItem(modelStorageKey(savedProvider))
+      if (savedModel) {
+        useLLMStore.getState().setApiModel(savedModel)
+      }
+      const savedKey = localStorage.getItem(keyStorageKey(savedProvider)) ?? ''
+      setLocalKey(savedKey)
+      if (savedKey) {
+        useLLMStore.getState().setApiKey(savedKey)
         setLoadingModels(true)
         useLLMStore
           .getState()
           .setLlmModelList()
           .finally(() => setLoadingModels(false))
       }
+      return
+    }
+
+    const fallbackKey = localStorage.getItem(keyStorageKey(provider)) ?? ''
+    if (fallbackKey) {
+      setLocalKey(fallbackKey)
+      setApiKey(fallbackKey)
+      setLoadingModels(true)
+      useLLMStore
+        .getState()
+        .setLlmModelList()
+        .finally(() => setLoadingModels(false))
     } else if (apiKey) {
       setLocalKey(apiKey)
     }
@@ -72,7 +141,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
     // 仅手动输入的 key 才持久化（内置密钥不存入 localStorage）
     if (!isBuiltinKey) {
       try {
-        localStorage.setItem('sf_api_key', value)
+        localStorage.setItem(keyStorageKey(provider), value)
       } catch {
         // 持久化失败不阻塞
       }
@@ -91,7 +160,15 @@ export default function Agreement({ onAgreed }: AgreementProps) {
     } finally {
       setLoadingModels(false)
     }
-  }, [localKey, apiKey, setApiKey, llmModelList.length, isBuiltinKey])
+  }, [
+    localKey,
+    apiKey,
+    setApiKey,
+    llmModelList.length,
+    isBuiltinKey,
+    keyStorageKey,
+    provider,
+  ])
 
   /** 尝试解密内置 API Key */
   const handleUnlock = useCallback(async () => {
@@ -100,7 +177,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
 
     setUnlockStatus('loading')
     try {
-      const decrypted = await decryptBuiltinApiKey(secret)
+      const decrypted = await decryptBuiltinApiKey(secret, provider)
       if (decrypted) {
         setUnlockStatus('success')
         setIsBuiltinKey(true)
@@ -129,7 +206,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
     } catch {
       setUnlockStatus('error')
     }
-  }, [devSecretInput, setApiKey])
+  }, [devSecretInput, setApiKey, provider])
 
   // 过滤出 chat 类模型
   const chatModels = llmModelList.filter((m) => {
@@ -155,10 +232,27 @@ export default function Agreement({ onAgreed }: AgreementProps) {
     return !excluded.some((ex) => lower.includes(ex))
   })
 
+  const handleProviderChange = useCallback(
+    (nextProvider: LLMProvider) => {
+      if (nextProvider === provider) return
+      localStorage.setItem('llm_provider', nextProvider)
+      setProvider(nextProvider)
+    },
+    [provider, setProvider]
+  )
+
+  const handleModelChange = useCallback(
+    (model: string) => {
+      setApiModel(model)
+      localStorage.setItem(modelStorageKey(provider), model)
+    },
+    [provider, setApiModel, modelStorageKey]
+  )
+
   const canProceed = Boolean(apiKey) && Boolean(apiModel)
 
   return (
-    <div className="min-h-dvh flex items-center justify-center bg-gradient-to-b from-rose-50 to-white px-4">
+    <div className="min-h-dvh flex items-center justify-center bg-linear-to-b from-rose-50 to-white px-4">
       <div className="w-full max-w-xl mx-auto p-6 md:p-8 bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg border border-rose-100/80 animate-fadeIn">
         <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-rose-900">
           女性社区真实性别验证
@@ -168,7 +262,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
         </p>
 
         {/* 协议内容 */}
-        <div className="mt-5 space-y-2.5 text-sm text-rose-900/70 bg-rose-50/50 rounded-xl p-4 border border-rose-100/60">
+        <div className="mt-2 space-y-1 text-sm text-rose-900/70 bg-rose-50/50 rounded-xl p-4 border border-rose-100/60">
           <p>
             <span className="text-rose-600 font-medium">1.</span>{' '}
             不会收集你的任何信息。你所有的答案只会与 LLM
@@ -188,36 +282,65 @@ export default function Agreement({ onAgreed }: AgreementProps) {
           </p>
         </div>
         {/* 评估标准 */}
-        <p className="mt-2 text-rose-700/70 text-sm">
+        <p className="mt-4 text-rose-700/70 text-sm">
           评估标准：
         </p>
-        <div className="mt-5 space-y-2.5 text-sm text-rose-900/70 bg-rose-50/50 rounded-xl p-4 border border-rose-100/60">
+        <div className="mt-2 space-y-1 text-sm text-rose-900/70 bg-rose-50/50 rounded-xl p-4 border border-rose-100/60">
           <p>
             <span className="text-rose-600 font-medium">1.</span>{' '}
-            请描述你真实的身体感受，而非泛泛而谈，或网上搜索的答案。
+            请描述你<span className="text-rose-600 font-medium">真实的</span>身体感受，而非泛泛而谈，或网上搜索的答案。
           </p>
           <p>
             <span className="text-rose-600 font-medium">2.</span>{' '}
-            用词自然，能描述出：“只有亲身经历过才知道的细节”。
+            用词自然，能描述出：<span className="text-rose-600 font-medium">“只有亲身经历过才知道的细节”</span>。
           </p>
           <p>
             <span className="text-rose-600 font-medium">3.</span>{' '}
-            会提到一些"不太好意思说但确实如此"的真实体验。
+            会提到一些<span className="text-rose-600 font-medium">“不太好意思说但确实如此”</span>的真实体验。
           </p>
           <p>
             <span className="text-rose-600 font-medium">4.</span>{' '}
-            评估时考察的是回答的**真实感**和**细节丰富度**，而非仅看对错。
+            评估时考察的是回答的<span className="text-rose-600 font-medium">真实感</span>和<span className="text-rose-600 font-medium">细节丰富度</span>，而非仅看对错。
           </p>
         </div>
 
         {/* API 配置 */}
         <div className="mt-6 space-y-4">
+          {/* AI 提供商 */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-rose-900/80">
+              AI 提供商
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleProviderChange('siliconflow')}
+                className={`rounded-xl border px-3 py-2 text-sm transition-colors ${provider === 'siliconflow'
+                  ? 'border-rose-300 bg-rose-50 text-rose-700'
+                  : 'border-rose-200/80 bg-white text-rose-700/70 hover:bg-rose-50/40'
+                  }`}
+              >
+                硅基流动
+              </button>
+              <button
+                type="button"
+                onClick={() => handleProviderChange('openrouter')}
+                className={`rounded-xl border px-3 py-2 text-sm transition-colors ${provider === 'openrouter'
+                  ? 'border-rose-300 bg-rose-50 text-rose-700'
+                  : 'border-rose-200/80 bg-white text-rose-700/70 hover:bg-rose-50/40'
+                  }`}
+              >
+                OpenRouter
+              </button>
+            </div>
+          </div>
+
           {/* API Key */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium text-rose-900/80">
               API Key
               <span className="ml-1.5 text-xs font-normal text-rose-500/70">
-                硅基流动
+                {providerLabel}
               </span>
             </label>
             <input
@@ -279,7 +402,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
               <p className="text-xs text-rose-500">
                 请输入 API Key（
                 <a
-                  href="https://cloud.siliconflow.cn/account/ak"
+                  href={keyGuideUrl}
                   target="_blank"
                   rel="noreferrer"
                   className="underline hover:text-rose-700"
@@ -371,7 +494,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
             <div className="relative">
               <select
                 value={apiModel}
-                onChange={(e) => setApiModel(e.target.value)}
+                onChange={(e) => handleModelChange(e.target.value)}
                 disabled={loadingModels}
                 className="w-full appearance-none rounded-xl border border-rose-200/80 bg-white px-3.5 py-2.5 pr-9 text-sm outline-none focus:ring-2 focus:ring-rose-300/60 focus:border-rose-300 disabled:bg-rose-50 disabled:text-rose-400 transition-shadow"
               >
@@ -425,94 +548,105 @@ export default function Agreement({ onAgreed }: AgreementProps) {
             <p className="text-xs text-rose-500/60">
               {chatModels.length > 0
                 ? `已加载 ${chatModels.length} 个对话模型`
-                : '未选择时将使用默认模型 deepseek-ai/DeepSeek-V3.2-Exp'}
+                : provider === 'openrouter'
+                  ? '未选择时将使用默认模型 openai/gpt-5-nano'
+                  : '未选择时将使用默认模型 deepseek-ai/DeepSeek-V3.2-Exp'}
             </p>
           </div>
 
           {/* 思维链设置 */}
-          <div className="space-y-2.5 rounded-xl border border-rose-100/60 bg-rose-50/30 p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-sm font-medium text-rose-900/80">
-                  深度思考
-                </span>
-                <span className="ml-1.5 text-xs text-rose-500/60">
-                  enable_thinking
-                </span>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={enableThinking}
-                onClick={() =>
-                  setEnableThinking(!enableThinking)
-                }
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-rose-300 focus:ring-offset-2 ${enableThinking
-                  ? 'bg-rose-600'
-                  : 'bg-rose-200'
-                  }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${enableThinking
-                    ? 'translate-x-5'
-                    : 'translate-x-0'
-                    }`}
-                />
-              </button>
-            </div>
-
-            {enableThinking && !modelSupportsThinking && (
-              <p className="text-xs text-amber-600/80 bg-amber-50/60 rounded-lg px-2.5 py-1.5">
-                当前模型可能不支持深度思考。已知支持的模型包括
-                DeepSeek-V3.2、Qwen3 系列、GLM-4.7
-                等，其他模型开启后 API
-                可能会忽略该参数或返回错误。
-              </p>
-            )}
-
-            {enableThinking && (
-              <div className="space-y-1.5 pt-1">
+          <div className="space-y-1 rounded-xl border border-rose-100/60 bg-rose-50/30 p-4">
+            {provider === 'siliconflow' ? (
+              <>
                 <div className="flex items-center justify-between">
-                  <label className="text-xs text-rose-900/70">
-                    思考预算
-                    <span className="ml-1 text-rose-500/50">
-                      thinking_budget
+                  <div>
+                    <span className="text-sm font-medium text-rose-900/80">
+                      深度思考
                     </span>
-                  </label>
-                  <span className="text-xs text-rose-700 tabular-nums font-medium">
-                    {thinkingBudget.toLocaleString()} tokens
-                  </span>
+                    <span className="ml-1.5 text-xs text-rose-500/60">
+                      enable_thinking
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={enableThinking}
+                    onClick={() =>
+                      setEnableThinking(!enableThinking)
+                    }
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-rose-300 focus:ring-offset-2 ${enableThinking
+                      ? 'bg-rose-600'
+                      : 'bg-rose-200'
+                      }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${enableThinking
+                        ? 'translate-x-5'
+                        : 'translate-x-0'
+                        }`}
+                    />
+                  </button>
                 </div>
-                <input
-                  type="range"
-                  min={128}
-                  max={32768}
-                  step={128}
-                  value={thinkingBudget}
-                  onChange={(e) =>
-                    setThinkingBudget(
-                      Number(e.target.value)
-                    )
-                  }
-                  className="w-full h-1.5 bg-rose-200 rounded-full appearance-none cursor-pointer accent-rose-600 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-600 [&::-webkit-slider-thumb]:shadow-sm"
-                />
-                <div className="flex justify-between text-[10px] text-rose-400/70">
-                  <span>128</span>
-                  <span>4096</span>
-                  <span>16384</span>
-                  <span>32768</span>
-                </div>
-                <p className="text-xs text-rose-500/50">
-                  开启后模型会先进行推理思考再回答，可能提升题目质量，但会增加响应时间和
-                  token 消耗
-                </p>
-              </div>
+
+                {enableThinking && !modelSupportsThinking && (
+                  <p className="text-xs text-amber-600/80 bg-amber-50/60 rounded-lg px-2.5 py-1.5">
+                    当前模型可能不支持深度思考。已知支持的模型包括
+                    DeepSeek-V3.2、Qwen3 系列、GLM-4.7
+                    等，其他模型开启后 API
+                    可能会忽略该参数或返回错误。
+                  </p>
+                )}
+
+                {enableThinking && (
+                  <div className="space-y-1.5 pt-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs text-rose-900/70">
+                        思考预算
+                        <span className="ml-1 text-rose-500/50">
+                          thinking_budget
+                        </span>
+                      </label>
+                      <span className="text-xs text-rose-700 tabular-nums font-medium">
+                        {thinkingBudget.toLocaleString()} tokens
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={128}
+                      max={32768}
+                      step={128}
+                      value={thinkingBudget}
+                      onChange={(e) =>
+                        setThinkingBudget(
+                          Number(e.target.value)
+                        )
+                      }
+                      className="w-full h-1.5 bg-rose-200 rounded-full appearance-none cursor-pointer accent-rose-600 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-600 [&::-webkit-slider-thumb]:shadow-sm"
+                    />
+                    <div className="flex justify-between text-[10px] text-rose-400/70">
+                      <span>128</span>
+                      <span>4096</span>
+                      <span>16384</span>
+                      <span>32768</span>
+                    </div>
+                    <p className="text-xs text-rose-500/50">
+                      开启后模型会先进行推理思考再回答，可能提升题目质量，但会增加响应时间和
+                      token 消耗
+                    </p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-rose-600/80">
+                OpenRouter 接入采用 `callModel` 模式，当前未暴露
+                `enable_thinking` 配置项。
+              </p>
             )}
           </div>
         </div>
 
         {/* 开始按钮 */}
-        <div className="mt-8">
+        <div className="mt-4">
           <button
             disabled={!canProceed}
             onClick={onAgreed}

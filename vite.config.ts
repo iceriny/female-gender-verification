@@ -62,11 +62,19 @@ export default defineConfig(({ mode }) => {
         ? deriveHash(DEV_SECRET_PLAINTEXT, DEV_SECRET_SALT)
         : ''
 
-    /* ── 内置 LLM API Key 加密（需同时设置 VITE_LLM_API_KEY 和 VITE_DEV_SECRET） ── */
+    /* ── 内置 API Key 加密（需同时设置 API Key 与 VITE_DEV_SECRET） ── */
     const LLM_API_KEY = env.VITE_LLM_API_KEY || ''
+    const OPENROUTER_API_KEY = env.VITE_OPENROUTER_API_KEY || ''
     let encryptedKey = { data: '', salt: '', iv: '' }
+    let encryptedOpenRouterKey = { data: '', salt: '', iv: '' }
     if (LLM_API_KEY && DEV_SECRET_PLAINTEXT) {
         encryptedKey = encryptApiKey(LLM_API_KEY, DEV_SECRET_PLAINTEXT)
+    }
+    if (OPENROUTER_API_KEY && DEV_SECRET_PLAINTEXT) {
+        encryptedOpenRouterKey = encryptApiKey(
+            OPENROUTER_API_KEY,
+            DEV_SECRET_PLAINTEXT
+        )
     }
 
     /* ── DEBUG 开关 ── */
@@ -87,6 +95,15 @@ export default defineConfig(({ mode }) => {
             __ENCRYPTED_LLM_KEY__: JSON.stringify(encryptedKey.data),
             __ENCRYPTED_LLM_KEY_SALT__: JSON.stringify(encryptedKey.salt),
             __ENCRYPTED_LLM_KEY_IV__: JSON.stringify(encryptedKey.iv),
+            __ENCRYPTED_OPENROUTER_KEY__: JSON.stringify(
+                encryptedOpenRouterKey.data
+            ),
+            __ENCRYPTED_OPENROUTER_KEY_SALT__: JSON.stringify(
+                encryptedOpenRouterKey.salt
+            ),
+            __ENCRYPTED_OPENROUTER_KEY_IV__: JSON.stringify(
+                encryptedOpenRouterKey.iv
+            ),
         },
     }
 })

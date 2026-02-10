@@ -18,7 +18,7 @@
    - 密钥安全加密实现
 4. **[状态管理 (Zustand Stores)](./state_management.md)**
    - QuestionStore (题目与行为数据)
-   - LLMStore (API 连接与流式处理)
+   - LLMStore (SiliconFlow/OpenRouter 连接与流式处理)
 
 ## 🏗️ 顶层目录结构
 

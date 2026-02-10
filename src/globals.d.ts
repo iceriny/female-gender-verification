@@ -17,3 +17,12 @@ declare const __ENCRYPTED_LLM_KEY_SALT__: string
 
 /** 内置 LLM API Key 加密用 GCM IV（base64） */
 declare const __ENCRYPTED_LLM_KEY_IV__: string
+
+/** 内置 OpenRouter API Key 的 AES-256-GCM 密文（base64，含 auth tag） */
+declare const __ENCRYPTED_OPENROUTER_KEY__: string
+
+/** 内置 OpenRouter API Key 加密用 PBKDF2 盐（base64） */
+declare const __ENCRYPTED_OPENROUTER_KEY_SALT__: string
+
+/** 内置 OpenRouter API Key 加密用 GCM IV（base64） */
+declare const __ENCRYPTED_OPENROUTER_KEY_IV__: string

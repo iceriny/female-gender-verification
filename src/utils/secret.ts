@@ -1,4 +1,5 @@
 // __DEV_SECRET_HASH__ 和 __DEV_SECRET_SALT__ 声明位于 src/globals.d.ts
+import type { LLMProvider } from '../store/LLMStore'
 
 /**
  * 验证开发者密钥（用于解锁参考答案等功能）
@@ -32,14 +33,30 @@ export async function verifyDevSecret(input: string): Promise<boolean> {
 
 /**
  * 判断当前构建是否内嵌了加密的 LLM API Key
- * 仅当 .env 中同时设置了 VITE_LLM_API_KEY 和 VITE_DEV_SECRET 时才会内嵌
+ * 仅当 .env 中同时设置了对应 provider 的 API Key 与 VITE_DEV_SECRET 时才会内嵌
  */
-export function hasBuiltinApiKey(): boolean {
-    return Boolean(
-        __ENCRYPTED_LLM_KEY__ &&
-            __ENCRYPTED_LLM_KEY_SALT__ &&
-            __ENCRYPTED_LLM_KEY_IV__
-    )
+function getEncryptedPayload(provider: LLMProvider): {
+    key: string
+    salt: string
+    iv: string
+} {
+    if (provider === 'openrouter') {
+        return {
+            key: __ENCRYPTED_OPENROUTER_KEY__,
+            salt: __ENCRYPTED_OPENROUTER_KEY_SALT__,
+            iv: __ENCRYPTED_OPENROUTER_KEY_IV__,
+        }
+    }
+    return {
+        key: __ENCRYPTED_LLM_KEY__,
+        salt: __ENCRYPTED_LLM_KEY_SALT__,
+        iv: __ENCRYPTED_LLM_KEY_IV__,
+    }
+}
+
+export function hasBuiltinApiKey(provider: LLMProvider = 'siliconflow'): boolean {
+    const payload = getEncryptedPayload(provider)
+    return Boolean(payload.key && payload.salt && payload.iv)
 }
 
 /**
@@ -53,19 +70,21 @@ export function hasBuiltinApiKey(): boolean {
  * @returns 解密后的 API Key，若失败则返回 null
  */
 export async function decryptBuiltinApiKey(
-    devSecret: string
+    devSecret: string,
+    provider: LLMProvider = 'siliconflow'
 ): Promise<string | null> {
-    if (!hasBuiltinApiKey()) return null
+    if (!hasBuiltinApiKey(provider)) return null
 
     try {
+        const payload = getEncryptedPayload(provider)
         // base64 → Uint8Array
-        const salt = Uint8Array.from(atob(__ENCRYPTED_LLM_KEY_SALT__), (c) =>
+        const salt = Uint8Array.from(atob(payload.salt), (c) =>
             c.charCodeAt(0)
         )
-        const iv = Uint8Array.from(atob(__ENCRYPTED_LLM_KEY_IV__), (c) =>
+        const iv = Uint8Array.from(atob(payload.iv), (c) =>
             c.charCodeAt(0)
         )
-        const ciphertext = Uint8Array.from(atob(__ENCRYPTED_LLM_KEY__), (c) =>
+        const ciphertext = Uint8Array.from(atob(payload.key), (c) =>
             c.charCodeAt(0)
         )
 

@@ -48,12 +48,13 @@ interface Question {
 
 ## 🤖 LLMStore (`src/store/LLMStore.ts`)
 
-负责与 SiliconFlow API 的底层交互，处理流式响应 (SSE)。
+负责与 SiliconFlow / OpenRouter 的底层交互，并统一处理流式状态。
 
 ### 核心 State
 
 ```typescript
 interface LLMStore {
+    provider: 'siliconflow' | 'openrouter'
     apiKey: string
     apiModel: string
     llmModelList: string[]
@@ -72,10 +73,11 @@ interface LLMStore {
 ### 核心方法 `request`
 
 这是一个通用的 LLM 请求封装器：
-1. **参数组装**: 将 `messages`, `jsonMode`, `enable_thinking` 等参数组装成 API 请求体。
-2. **调试模式**: 如果 `__DEBUG__` 为真，强制开启 `stream: true`。
-3. **SSE 解析 (`parseSSEStream`)**:
+1. **提供商分流**: 根据 `provider` 选择 SiliconFlow（OpenAI 兼容接口）或 OpenRouter（`@openrouter/sdk` 的 `callModel`）。
+2. **参数组装**: 将 `messages`, `jsonMode`, `enable_thinking` 等参数组装成请求参数。
+3. **调试模式**: 如果 `__DEBUG__` 为真，开启流式显示。
+4. **流式解析 (`parseSSEStream`)**:
    - 处理 `text/event-stream` 响应。
    - 实时解析 `delta.content` 和 `delta.reasoning_content`。
    - 实时更新 `streamingText` 和 `streamingReasoning` 状态，以便 UI (`DebugStreamPanel`) 实时渲染。
-4. **JSON 修复**: 流式结束后，尝试将累积的 `streamingText` 解析为 JSON 对象返回。
+5. **JSON 修复**: 流式结束后，尝试将累积文本解析为 JSON 对象返回。

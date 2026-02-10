@@ -4,7 +4,7 @@
 
 ## 🧠 LLM Handlers (`src/utils/llmHandlers.ts`)
 
-这是连接 Store 和 API 的中间层，负责 Prompt 组装和响应解析。
+这是连接 Store 和 API 的中间层，负责 Prompt 组装和响应解析。其底层请求由 `LLMStore.request` 提供，可切换 SiliconFlow 或 OpenRouter。
 
 ### 1. 题目生成 (`generateQuestionsViaLLM`)
 

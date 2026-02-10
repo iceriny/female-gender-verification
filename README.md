@@ -6,7 +6,7 @@
 
 ## ✨ 核心特性
 
-- **大模型动态出题**：基于 SiliconFlow (硅基流动) API，每次生成不同的 10 道题目。
+- **大模型动态出题**：支持 SiliconFlow (硅基流动) 与 OpenRouter 两种 AI 提供商，每次生成不同的 10 道题目。
 - **体验导向设计**：题目设计原则为"只有亲身经历过才知道的细节"，避免可搜索的知识性问题。
 - **追问验证机制**：首轮回答后，AI 会选取 2-3 题进行追问，基于用户的具体回答挖掘细节，防止编造。
 - **多维反作弊系统**：
@@ -21,7 +21,7 @@
 - **框架**: React 19 + TypeScript + Vite
 - **样式**: Tailwind CSS v4
 - **状态管理**: Zustand
-- **AI 接入**: SiliconFlow API (OpenAI Compatible)
+- **AI 接入**: SiliconFlow API + OpenRouter TypeScript SDK (`callModel`)
 - **部署**: GitHub Pages (自动工作流)
 
 ## 🚀 快速开始
@@ -44,6 +44,7 @@ cp .env.example .env
 - `VITE_DEV_SECRET`: 开发者密钥（用于解锁参考答案或内置 API Key）
 - `VITE_DEV_SECRET_SALT`: 密钥盐值
 - `VITE_LLM_API_KEY`: (可选) 内置的 SiliconFlow API Key
+- `VITE_OPENROUTER_API_KEY`: (可选) 内置的 OpenRouter API Key
 
 ### 3. 开发环境运行
 
@@ -62,7 +63,7 @@ npm run build
 
 ### 内置 API Key 加密
 为了方便部署且防止 API Key 泄露，本项目采用 **PBKDF2 + AES-256-GCM** 加密方案：
-1. **构建时**：利用 `VITE_DEV_SECRET` 派生密钥，加密 `VITE_LLM_API_KEY`。
+1. **构建时**：利用 `VITE_DEV_SECRET` 派生密钥，加密 `VITE_LLM_API_KEY` / `VITE_OPENROUTER_API_KEY`。
 2. **产物中**：只包含加密后的密文、Salt 和 IV。
 3. **运行时**：用户输入正确的开发者密钥后，在浏览器端解密并使用。
 
