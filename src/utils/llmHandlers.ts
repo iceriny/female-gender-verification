@@ -114,9 +114,7 @@ function jsonModePrefixFollowUp(): string {
 
 function safeJsonParse(text: string): unknown {
     let cleaned = text.trim()
-    const fenceMatch = cleaned.match(
-        /^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/
-    )
+    const fenceMatch = cleaned.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/)
     if (fenceMatch) {
         cleaned = fenceMatch[1].trim()
     }
@@ -193,9 +191,7 @@ function ensureFollowUps(rawParsed: unknown): LLMFollowUpItem[] {
 /**
  * 调用 LLM 生成验证题目
  */
-export async function generateQuestionsViaLLM(
-    count = 10
-): Promise<Question[]> {
+export async function generateQuestionsViaLLM(count = 10): Promise<Question[]> {
     const store = useLLMStore.getState()
 
     // 设置流式阶段标签
@@ -341,9 +337,7 @@ export async function generateFollowUpViaLLM(
 
     dbgGroup(`成功生成 ${result.length} 条追问`)
     result.forEach((fu, i) =>
-        dbg(
-            `  ${i + 1}. [原题${fu.originalIndex}] ${fu.followUpQuestion}`
-        )
+        dbg(`  ${i + 1}. [原题${fu.originalIndex}] ${fu.followUpQuestion}`)
     )
     dbgGroupEnd()
 
