@@ -22,7 +22,11 @@ function App() {
   return (
     <div className="min-h-dvh">
       {/* 左上角 logo 不可点击与拖动 */}
-      <img src="/logo.svg" alt="logo" className="w-16 h-16 absolute top-4 left-4 pointer-events-none select-none" />
+      <img
+        src={`${import.meta.env.BASE_URL}logo.svg`}
+        alt="logo"
+        className="w-16 h-16 absolute top-4 left-4 pointer-events-none select-none"
+      />
       {step === 'agreement' && (
         <Agreement onAgreed={() => setStep('quiz')} />
       )}
