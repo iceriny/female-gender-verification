@@ -1,6 +1,7 @@
 import { useLLMStore } from '../store/LLMStore'
 import type { Question, FollowUpQuestion } from '../store/questionStore'
 import { useQuestionStore } from '../store/questionStore'
+import { jsonrepair } from 'jsonrepair'
 import {
     PROMPT_GENERATE,
     PROMPT_EVALUATE,
@@ -113,12 +114,213 @@ function jsonModePrefixFollowUp(): string {
 }
 
 function safeJsonParse(text: string): unknown {
-    let cleaned = text.trim()
-    const fenceMatch = cleaned.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/)
-    if (fenceMatch) {
-        cleaned = fenceMatch[1].trim()
-    }
+    const cleaned = stripCodeFence(text.trim())
     return JSON.parse(cleaned)
+}
+
+function stripCodeFence(text: string): string {
+    const fenceMatch = text.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/)
+    return fenceMatch ? fenceMatch[1].trim() : text
+}
+
+function tryParseWithRepair(text: string): unknown {
+    const cleaned = stripCodeFence(text.trim())
+    try {
+        return JSON.parse(cleaned)
+    } catch {
+        const repaired = jsonrepair(cleaned)
+        return JSON.parse(repaired)
+    }
+}
+
+function extractFirstJSONObject(text: string): string | null {
+    const source = stripCodeFence(text)
+    const start = source.indexOf('{')
+    if (start < 0) return null
+
+    let depth = 0
+    let inString = false
+    let escaped = false
+
+    for (let i = start; i < source.length; i++) {
+        const ch = source[i]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch === '\\') {
+                escaped = true
+            } else if (ch === '"') {
+                inString = false
+            }
+            continue
+        }
+
+        if (ch === '"') {
+            inString = true
+            continue
+        }
+        if (ch === '{') depth++
+        if (ch === '}') {
+            depth--
+            if (depth === 0) {
+                return source.slice(start, i + 1)
+            }
+        }
+    }
+
+    // 不完整 JSON：返回从第一个 { 到末尾，交给 jsonrepair 尝试修复
+    return source.slice(start)
+}
+
+function decodeLooseJsonString(raw: string): string {
+    try {
+        return JSON.parse(`"${raw}"`) as string
+    } catch {
+        return raw
+            .replace(/\\n/g, '\n')
+            .replace(/\\t/g, '\t')
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\')
+    }
+}
+
+function extractValuesByKeyFromLooseJson(
+    text: string,
+    key: string
+): string[] {
+    const source = stripCodeFence(text)
+    const results: string[] = []
+    const pattern = `"${key}"`
+
+    let i = 0
+    while (i < source.length) {
+        const keyPos = source.indexOf(pattern, i)
+        if (keyPos < 0) break
+
+        let cursor = keyPos + pattern.length
+        while (cursor < source.length && /\s/.test(source[cursor])) cursor++
+        if (source[cursor] !== ':') {
+            i = keyPos + pattern.length
+            continue
+        }
+        cursor++
+        while (cursor < source.length && /\s/.test(source[cursor])) cursor++
+        if (source[cursor] !== '"') {
+            i = cursor
+            continue
+        }
+
+        cursor++ // skip opening quote
+        let escaped = false
+        let raw = ''
+
+        while (cursor < source.length) {
+            const ch = source[cursor]
+            if (escaped) {
+                raw += `\\${ch}`
+                escaped = false
+                cursor++
+                continue
+            }
+            if (ch === '\\') {
+                escaped = true
+                cursor++
+                continue
+            }
+            if (ch === '"') {
+                break
+            }
+            raw += ch
+            cursor++
+        }
+
+        const value = decodeLooseJsonString(raw).trim()
+        if (value) results.push(value)
+        i = cursor + 1
+    }
+
+    return results
+}
+
+function salvageStructuredFromText(text: string): LLMStructuredResult | null {
+    const qList = extractValuesByKeyFromLooseJson(text, 'Q')
+    if (qList.length === 0) return null
+
+    const QA = qList.map((Q) => ({ Q }))
+    return { QA }
+}
+
+function salvageFollowUpsFromText(text: string): LLMFollowUpItem[] {
+    const followUpQuestions = extractValuesByKeyFromLooseJson(
+        text,
+        'followUpQuestion'
+    )
+    return followUpQuestions.map((followUpQuestion) => ({
+        originalIndex: 0,
+        originalQuestion: '',
+        originalAnswer: '',
+        followUpQuestion,
+    }))
+}
+
+function parseStructuredBestEffort(
+    parsed: unknown,
+    content: string
+): LLMStructuredResult | null {
+    const parsedFirst = ensureStructured(parsed)
+    if (parsedFirst) return parsedFirst
+
+    if (!content.trim()) return null
+
+    try {
+        return ensureStructured(safeJsonParse(content))
+    } catch {
+        // ignore and continue fallbacks
+    }
+
+    try {
+        return ensureStructured(tryParseWithRepair(content))
+    } catch {
+        // ignore and continue fallbacks
+    }
+
+    const objectBlock = extractFirstJSONObject(content)
+    if (objectBlock) {
+        try {
+            return ensureStructured(tryParseWithRepair(objectBlock))
+        } catch {
+            // ignore and continue salvage
+        }
+    }
+
+    return salvageStructuredFromText(content)
+}
+
+function parseFollowUpsBestEffort(parsed: unknown, content: string): LLMFollowUpItem[] {
+    const fromParsed = ensureFollowUps(parsed)
+    if (fromParsed.length > 0) return fromParsed
+    if (!content.trim()) return []
+
+    try {
+        const fixed = tryParseWithRepair(content)
+        const ensured = ensureFollowUps(fixed)
+        if (ensured.length > 0) return ensured
+    } catch {
+        // ignore and continue salvage
+    }
+
+    const objectBlock = extractFirstJSONObject(content)
+    if (objectBlock) {
+        try {
+            const fixed = tryParseWithRepair(objectBlock)
+            const ensured = ensureFollowUps(fixed)
+            if (ensured.length > 0) return ensured
+        } catch {
+            // ignore and continue salvage
+        }
+    }
+
+    return salvageFollowUpsFromText(content)
 }
 
 function ensureStructured(rawParsed: unknown): LLMStructuredResult | null {
@@ -208,50 +410,82 @@ export async function generateQuestionsViaLLM(count = 10): Promise<Question[]> {
         '只需返回 QA 数组，每个元素包含 Q 字段即可，无需 A、single_confidence、confidence、pass。',
     ].join('\n')
 
-    const messages = [
-        { role: 'system' as const, content: systemContent },
-        {
-            role: 'user' as const,
-            content: `请生成 ${count} 道女性性别验证题目，严格按 JSON 格式返回。`,
-        },
-    ]
+    const normalizedSet = new Set<string>()
+    const collected: LLMQaItem[] = []
+    const maxRetries = 3
+    let attempt = 0
+
+    const dedupePush = (qaList: LLMQaItem[]) => {
+        qaList.forEach((item) => {
+            const normalized = item.Q.replace(/\s+/g, ' ').trim()
+            if (!normalized || normalizedSet.has(normalized)) return
+            normalizedSet.add(normalized)
+            collected.push({ Q: normalized })
+        })
+    }
 
     dbgGroup('generateQuestionsViaLLM')
-    dbg('题目数量:', count)
+    dbg('目标题目数量:', count)
     dbg('system prompt 长度:', systemContent.length)
     dbgGroupEnd()
 
-    dbgTime('生成题目')
-    const res = await store.request(messages, {
-        jsonMode: true,
-        max_tokens: 3072,
-        temperature: 0.85,
-    })
-    dbgTimeEnd('生成题目')
+    while (collected.length < count && attempt < maxRetries) {
+        attempt++
+        const remaining = count - collected.length
+        const userContent =
+            collected.length === 0
+                ? `请生成 ${remaining} 道女性性别验证题目，严格按 JSON 格式返回。`
+                : [
+                      `上次已经成功生成了 ${collected.length} 道，请只补充 ${remaining} 道新题。`,
+                      '补充题目不得与以下已生成题目重复或高度相似：',
+                      JSON.stringify(
+                          collected.map((x) => x.Q),
+                          null,
+                          2
+                      ),
+                      '请仅返回补充题目的 JSON。',
+                  ].join('\n')
 
-    let structured = ensureStructured(res.parsed)
-    if (!structured && res.content) {
-        dbgWarn('parsed 为空，尝试手动解析 content…')
-        try {
-            structured = ensureStructured(safeJsonParse(res.content))
-        } catch {
-            dbgWarn('手动解析也失败')
+        const messages = [
+            { role: 'system' as const, content: systemContent },
+            { role: 'user' as const, content: userContent },
+        ]
+
+        dbgTime(`生成题目-第${attempt}轮`)
+        const res = await store.request(messages, {
+            jsonMode: true,
+            max_tokens: Math.min(4096, Math.max(1024, remaining * 360)),
+            temperature: 0.85,
+        })
+        dbgTimeEnd(`生成题目-第${attempt}轮`)
+
+        const structured = parseStructuredBestEffort(res.parsed, res.content)
+        if (!structured || structured.QA.length === 0) {
+            dbgWarn(`第${attempt}轮未解析到可用题目，content:`, res.content.slice(0, 800))
+            continue
         }
+
+        const before = collected.length
+        dedupePush(structured.QA)
+        const added = collected.length - before
+        dbg(`第${attempt}轮提取 ${structured.QA.length} 道，新增 ${added} 道，累计 ${collected.length}/${count}`)
     }
 
-    if (!structured || structured.QA.length === 0) {
-        dbgWarn('未获取到有效题目，content:', res.content.slice(0, 500))
+    if (collected.length === 0) {
         throw new Error('LLM 未返回有效题目，请重试')
     }
+    if (collected.length < count) {
+        dbgWarn(`题目补齐失败：仅获得 ${collected.length}/${count} 道`)
+    }
 
-    const questions = structured.QA.map((item, idx) => ({
+    const questions = collected.slice(0, count).map((item, idx) => ({
         id: idx + 1,
         question: item.Q,
         answer: '',
         confidence: 0,
     }))
 
-    dbgGroup(`成功生成 ${questions.length} 道题目`)
+    dbgGroup(`成功生成 ${questions.length} 道题目（目标 ${count}）`)
     questions.forEach((q, i) => dbg(`  ${i + 1}. ${q.question}`))
     dbgGroupEnd()
 
@@ -308,18 +542,7 @@ export async function generateFollowUpViaLLM(
     })
     dbgTimeEnd('生成追问')
 
-    let followUps: LLMFollowUpItem[] = []
-    if (res.parsed) {
-        followUps = ensureFollowUps(res.parsed)
-    }
-    if (followUps.length === 0 && res.content) {
-        dbgWarn('parsed 为空，尝试手动解析追问 content…')
-        try {
-            followUps = ensureFollowUps(safeJsonParse(res.content))
-        } catch {
-            dbgWarn('追问手动解析也失败')
-        }
-    }
+    const followUps = parseFollowUpsBestEffort(res.parsed, res.content)
 
     if (followUps.length === 0) {
         dbgWarn('未获取到有效追问')
@@ -434,15 +657,7 @@ export async function evaluateAnswersViaLLM(
     })
     dbgTimeEnd('评估答案')
 
-    let structured = ensureStructured(res.parsed)
-    if (!structured && res.content) {
-        dbgWarn('parsed 为空，尝试手动解析…')
-        try {
-            structured = ensureStructured(safeJsonParse(res.content))
-        } catch {
-            dbgWarn('手动解析也失败')
-        }
-    }
+    const structured = parseStructuredBestEffort(res.parsed, res.content)
 
     if (!structured) {
         dbgWarn('评估失败，无有效结构化数据')
