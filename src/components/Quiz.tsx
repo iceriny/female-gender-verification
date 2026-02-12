@@ -82,13 +82,7 @@ function extractStringValues(text: string, key: string): string[] {
 
 /* ── 思考计时器组件 ── */
 
-function ThinkingTimer({
-  active,
-  label,
-}: {
-  active: boolean
-  label?: string
-}) {
+function ThinkingTimer({ active, label }: { active: boolean; label?: string }) {
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef<number | null>(null)
 
@@ -117,7 +111,12 @@ function ThinkingTimer({
   return (
     <div className="inline-flex items-center gap-2.5 px-4 py-2 rounded-full bg-purple-50/80 border border-purple-100/60 animate-fadeInSoft">
       <div className="w-5 h-5 text-purple-500 animate-thinkingPulse">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+        >
           <path
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -522,9 +521,7 @@ export default function Quiz({ onDone }: QuizProps) {
         await doFinalEvaluation()
       }
     } catch (e) {
-      setError(
-        (e as Error)?.message || '生成追问失败，将直接进入评估…'
-      )
+      setError((e as Error)?.message || '生成追问失败，将直接进入评估…')
       setTimeout(() => {
         void doFinalEvaluation()
       }, 1500)
@@ -597,8 +594,7 @@ export default function Quiz({ onDone }: QuizProps) {
 
   const currentTotal =
     phase === 'main' ? questions.length : followUpQuestions.length
-  const currentIdx =
-    phase === 'main' ? currentQuestionIndex : followUpIndex
+  const currentIdx = phase === 'main' ? currentQuestionIndex : followUpIndex
 
   // 题目导航圆点数量（加载中时显示预期总数）
   const dotsCount =
@@ -619,13 +615,16 @@ export default function Quiz({ onDone }: QuizProps) {
             {/* 思考计时器 */}
             {thinkingActive && (
               <div className="flex justify-center">
-                <ThinkingTimer active={thinkingActive} label="正在深度思考题目设计" />
+                <ThinkingTimer
+                  active={thinkingActive}
+                  label="正在深度思考题目设计"
+                />
               </div>
             )}
 
             {!thinkingActive && (
               <p className="text-rose-800/80 text-sm animate-fadeInSoft">
-                正在生成验证题目，请稍候…
+                使用人工智能生成验证题目，页面没有卡住，请稍候…
               </p>
             )}
 
@@ -698,7 +697,10 @@ export default function Quiz({ onDone }: QuizProps) {
 
             {thinkingActive && (
               <div className="flex justify-center">
-                <ThinkingTimer active={thinkingActive} label="正在思考追问策略" />
+                <ThinkingTimer
+                  active={thinkingActive}
+                  label="正在思考追问策略"
+                />
               </div>
             )}
 
@@ -729,7 +731,10 @@ export default function Quiz({ onDone }: QuizProps) {
 
             {thinkingActive && (
               <div className="flex justify-center">
-                <ThinkingTimer active={thinkingActive} label="正在深度分析回答" />
+                <ThinkingTimer
+                  active={thinkingActive}
+                  label="正在深度分析回答"
+                />
               </div>
             )}
 
@@ -804,9 +809,7 @@ export default function Quiz({ onDone }: QuizProps) {
         {isStreamingFollowUps && phase === 'followup' && (
           <div className="mb-3 flex items-center justify-center gap-2 animate-fadeInSoft">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            <span className="text-xs text-amber-500/70">
-              追问生成中…
-            </span>
+            <span className="text-xs text-amber-500/70">追问生成中…</span>
           </div>
         )}
 
@@ -839,27 +842,24 @@ export default function Quiz({ onDone }: QuizProps) {
               }`}
             >
               {/* 追问时显示原题上下文 */}
-              {phase === 'followup' &&
-                'originalQuestion' in current && (
-                  <div className="mb-4 p-3 rounded-xl bg-rose-50/60 border border-rose-100/40 text-xs text-rose-700/70 space-y-1">
-                    <p className="font-medium text-rose-800/70">
-                      原题：
-                      {
-                        (
-                          current as (typeof followUpQuestions)[number]
-                        ).originalQuestion
-                      }
-                    </p>
-                    <p>
-                      你的回答：
-                      {
-                        (
-                          current as (typeof followUpQuestions)[number]
-                        ).originalAnswer
-                      }
-                    </p>
-                  </div>
-                )}
+              {phase === 'followup' && 'originalQuestion' in current && (
+                <div className="mb-4 p-3 rounded-xl bg-rose-50/60 border border-rose-100/40 text-xs text-rose-700/70 space-y-1">
+                  <p className="font-medium text-rose-800/70">
+                    原题：
+                    {
+                      (current as (typeof followUpQuestions)[number])
+                        .originalQuestion
+                    }
+                  </p>
+                  <p>
+                    你的回答：
+                    {
+                      (current as (typeof followUpQuestions)[number])
+                        .originalAnswer
+                    }
+                  </p>
+                </div>
+              )}
 
               <div className="flex items-baseline gap-3 mb-4">
                 <span
@@ -977,9 +977,7 @@ export default function Quiz({ onDone }: QuizProps) {
                     key={q.id}
                     onClick={() => {
                       saveCurrentAnswer()
-                      setDirection(
-                        idx > currentQuestionIndex ? 'next' : 'prev'
-                      )
+                      setDirection(idx > currentQuestionIndex ? 'next' : 'prev')
                       setAnimKey((k) => k + 1)
                       setCurrentQuestionIndex(idx)
                     }}
@@ -991,8 +989,7 @@ export default function Quiz({ onDone }: QuizProps) {
                           : 'bg-rose-100 text-rose-400 hover:bg-rose-200'
                     }`}
                     style={{
-                      animationDelay:
-                        isLoading ? `${idx * 60}ms` : undefined,
+                      animationDelay: isLoading ? `${idx * 60}ms` : undefined,
                     }}
                     title={`第 ${idx + 1} 题${answered ? '（已答）' : ''}`}
                   >
@@ -1005,7 +1002,9 @@ export default function Quiz({ onDone }: QuizProps) {
                   <div
                     key={`pending-${idx}`}
                     className="w-7 h-7 rounded-full bg-rose-50 text-rose-200 text-xs font-medium flex items-center justify-center cursor-default animate-dotAppear"
-                    style={{ animationDelay: `${idx * 60}ms` }}
+                    style={{
+                      animationDelay: `${idx * 60}ms`,
+                    }}
                     title={`第 ${idx + 1} 题（生成中…）`}
                   >
                     {idx + 1}
