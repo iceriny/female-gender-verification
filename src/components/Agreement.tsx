@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   useLLMStoreHook,
   isThinkingSupported,
@@ -10,6 +10,127 @@ import { hasBuiltinApiKey, decryptBuiltinApiKey } from '../utils/secret'
 interface AgreementProps {
   onAgreed: () => void
 }
+
+/* ── 协议弹窗 ── */
+
+function AgreementModal({
+  open,
+  onClose,
+}: {
+  open: boolean
+  onClose: () => void
+}) {
+  const [mounted, setMounted] = useState(false)
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true)
+      const timer = setTimeout(() => setVisible(true), 30)
+      return () => clearTimeout(timer)
+    } else {
+      setVisible(false)
+      const timer = setTimeout(() => setMounted(false), 650)
+      return () => clearTimeout(timer)
+    }
+  }, [open])
+
+  if (!mounted) return null
+
+  return (
+    <div
+      className={`fixed inset-0 z-50 flex items-center justify-center px-4 transition-all ease-out ${
+        visible
+          ? 'bg-black/20 backdrop-blur-[2px] duration-600'
+          : 'bg-transparent backdrop-blur-0 duration-500'
+      }`}
+      onClick={onClose}
+    >
+      <div
+        className={`relative w-full max-w-lg max-h-[85vh] overflow-y-auto bg-white rounded-2xl shadow-xl border border-rose-100/80 p-6 md:p-8 transition-all ease-out custom-modal-scroll ${
+          visible
+            ? 'opacity-100 scale-100 translate-y-0 duration-600'
+            : 'opacity-0 scale-[0.96] translate-y-3 duration-500'
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-xl font-semibold text-rose-900 tracking-tight">
+          协议与提示
+        </h2>
+        <p className="mt-1.5 text-sm text-rose-700/60">
+          参与验证前，请了解以下信息
+        </p>
+
+        {/* 协议内容 */}
+        <div className="mt-4 space-y-1.5 text-sm text-rose-900/70 bg-rose-50/50 rounded-xl p-4 border border-rose-100/60">
+          <p>
+            <span className="text-rose-600 font-medium">1.</span>{' '}
+            不会收集你的任何信息。你所有的答案只会与 LLM
+            供应商进行交互，如有顾虑请参考对方的隐私策略。
+          </p>
+          <p>
+            <span className="text-rose-600 font-medium">2.</span>{' '}
+            验证题目与判断由大模型自动生成与评估，可能存在偏差。
+          </p>
+          <p>
+            <span className="text-rose-600 font-medium">3.</span>{' '}
+            结果仅供参考，不作为任何法律或医疗依据。
+          </p>
+          <p>
+            <span className="text-rose-600 font-medium">4.</span>{' '}
+            如遇不适内容，请立即停止。
+          </p>
+        </div>
+
+        {/* 评估标准 */}
+        <p className="mt-4 text-rose-700/70 text-sm font-medium">
+          评估标准：
+        </p>
+        <div className="mt-2 space-y-1.5 text-sm text-rose-900/70 bg-rose-50/50 rounded-xl p-4 border border-rose-100/60">
+          <p>
+            <span className="text-rose-600 font-medium">1.</span>{' '}
+            请描述你
+            <span className="text-rose-600 font-medium">真实的</span>
+            身体感受，而非泛泛而谈，或网上搜索的答案。
+          </p>
+          <p>
+            <span className="text-rose-600 font-medium">2.</span>{' '}
+            用词自然，能描述出：
+            <span className="text-rose-600 font-medium">
+              "只有亲身经历过才知道的细节"
+            </span>
+            。
+          </p>
+          <p>
+            <span className="text-rose-600 font-medium">3.</span>{' '}
+            会提到一些
+            <span className="text-rose-600 font-medium">
+              "不太好意思说但确实如此"
+            </span>
+            的真实体验。
+          </p>
+          <p>
+            <span className="text-rose-600 font-medium">4.</span>{' '}
+            评估时考察的是回答的
+            <span className="text-rose-600 font-medium">真实感</span>和
+            <span className="text-rose-600 font-medium">细节丰富度</span>
+            ，而非仅看对错。
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-6 w-full rounded-full bg-rose-600 text-white px-5 py-2.5 text-sm font-medium shadow-sm hover:bg-rose-700 active:bg-rose-800 transition-colors duration-300"
+        >
+          我已了解
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/* ── 主组件 ── */
 
 export default function Agreement({ onAgreed }: AgreementProps) {
   const {
@@ -30,6 +151,20 @@ export default function Agreement({ onAgreed }: AgreementProps) {
   const [loadingModels, setLoadingModels] = useState(false)
   const [touched, setTouched] = useState(false)
   const [modelError, setModelError] = useState<string | null>(null)
+
+  /* ── 协议弹窗（首次进入自动弹出） ── */
+  const [showModal, setShowModal] = useState(() => {
+    return !localStorage.getItem('agreement_seen')
+  })
+
+  const closeModal = useCallback(() => {
+    setShowModal(false)
+    try {
+      localStorage.setItem('agreement_seen', '1')
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   /* ── 内置密钥解锁相关 ── */
   const builtinAvailable = hasBuiltinApiKey(provider)
@@ -88,6 +223,18 @@ export default function Agreement({ onAgreed }: AgreementProps) {
     if (provider !== 'siliconflow') return false
     return isThinkingSupported(apiModel)
   }, [provider, apiModel])
+
+  /** 自动开启 thinking（当模型支持时） */
+  const autoEnabledRef = useRef(false)
+  useEffect(() => {
+    if (modelSupportsThinking && !autoEnabledRef.current) {
+      setEnableThinking(true)
+      autoEnabledRef.current = true
+    }
+    if (!modelSupportsThinking) {
+      autoEnabledRef.current = false
+    }
+  }, [modelSupportsThinking, setEnableThinking])
 
   // 初始化：恢复 provider / key / model
   useEffect(() => {
@@ -258,54 +405,46 @@ export default function Agreement({ onAgreed }: AgreementProps) {
           女性社区真实性别验证
         </h1>
         <p className="mt-2 text-rose-700/70 text-sm">
-          为了守护社区氛围，请先阅读以下协议与提示。
+          为了守护社区氛围，请先配置 AI 提供商并阅读协议。
         </p>
 
-        {/* 协议内容 */}
-        <div className="mt-2 space-y-1 text-sm text-rose-900/70 bg-rose-50/50 rounded-xl p-4 border border-rose-100/60">
-          <p>
-            <span className="text-rose-600 font-medium">1.</span>{' '}
-            不会收集你的任何信息。你所有的答案只会与 LLM
-            供应商进行交互，如有顾虑请参考对方的隐私策略。
-          </p>
-          <p>
-            <span className="text-rose-600 font-medium">2.</span>{' '}
-            验证题目与判断由大模型自动生成与评估，可能存在偏差。
-          </p>
-          <p>
-            <span className="text-rose-600 font-medium">3.</span>{' '}
-            结果仅供参考，不作为任何法律或医疗依据。
-          </p>
-          <p>
-            <span className="text-rose-600 font-medium">4.</span>{' '}
-            如遇不适内容，请立即停止。
-          </p>
-        </div>
-        {/* 评估标准 */}
-        <p className="mt-4 text-rose-700/70 text-sm">
-          评估标准：
-        </p>
-        <div className="mt-2 space-y-1 text-sm text-rose-900/70 bg-rose-50/50 rounded-xl p-4 border border-rose-100/60">
-          <p>
-            <span className="text-rose-600 font-medium">1.</span>{' '}
-            请描述你<span className="text-rose-600 font-medium">真实的</span>身体感受，而非泛泛而谈，或网上搜索的答案。
-          </p>
-          <p>
-            <span className="text-rose-600 font-medium">2.</span>{' '}
-            用词自然，能描述出：<span className="text-rose-600 font-medium">“只有亲身经历过才知道的细节”</span>。
-          </p>
-          <p>
-            <span className="text-rose-600 font-medium">3.</span>{' '}
-            会提到一些<span className="text-rose-600 font-medium">“不太好意思说但确实如此”</span>的真实体验。
-          </p>
-          <p>
-            <span className="text-rose-600 font-medium">4.</span>{' '}
-            评估时考察的是回答的<span className="text-rose-600 font-medium">真实感</span>和<span className="text-rose-600 font-medium">细节丰富度</span>，而非仅看对错。
-          </p>
-        </div>
+        {/* 查看协议按钮 */}
+        <button
+          type="button"
+          onClick={() => setShowModal(true)}
+          className="mt-3 w-full flex items-center gap-2.5 rounded-xl border border-rose-200/80 bg-rose-50/40 px-4 py-3 text-sm text-rose-700/80 hover:bg-rose-50 hover:border-rose-300/60 transition-all duration-500 group"
+        >
+          <svg
+            className="w-4 h-4 text-rose-500/70 group-hover:text-rose-600 transition-colors duration-500"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
+            />
+          </svg>
+          <span>查看协议与评估标准</span>
+          <svg
+            className="w-3.5 h-3.5 ml-auto text-rose-400/60 group-hover:translate-x-0.5 transition-transform duration-500"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M8.25 4.5l7.5 7.5-7.5 7.5"
+            />
+          </svg>
+        </button>
 
         {/* API 配置 */}
-        <div className="mt-6 space-y-4">
+        <div className="mt-5 space-y-4">
           {/* AI 提供商 */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium text-rose-900/80">
@@ -315,20 +454,22 @@ export default function Agreement({ onAgreed }: AgreementProps) {
               <button
                 type="button"
                 onClick={() => handleProviderChange('siliconflow')}
-                className={`rounded-xl border px-3 py-2 text-sm transition-colors ${provider === 'siliconflow'
-                  ? 'border-rose-300 bg-rose-50 text-rose-700'
-                  : 'border-rose-200/80 bg-white text-rose-700/70 hover:bg-rose-50/40'
-                  }`}
+                className={`rounded-xl border px-3 py-2 text-sm transition-all duration-400 ${
+                  provider === 'siliconflow'
+                    ? 'border-rose-300 bg-rose-50 text-rose-700 shadow-sm'
+                    : 'border-rose-200/80 bg-white text-rose-700/70 hover:bg-rose-50/40'
+                }`}
               >
                 硅基流动
               </button>
               <button
                 type="button"
                 onClick={() => handleProviderChange('openrouter')}
-                className={`rounded-xl border px-3 py-2 text-sm transition-colors ${provider === 'openrouter'
-                  ? 'border-rose-300 bg-rose-50 text-rose-700'
-                  : 'border-rose-200/80 bg-white text-rose-700/70 hover:bg-rose-50/40'
-                  }`}
+                className={`rounded-xl border px-3 py-2 text-sm transition-all duration-400 ${
+                  provider === 'openrouter'
+                    ? 'border-rose-300 bg-rose-50 text-rose-700 shadow-sm'
+                    : 'border-rose-200/80 bg-white text-rose-700/70 hover:bg-rose-50/40'
+                }`}
               >
                 OpenRouter
               </button>
@@ -348,7 +489,6 @@ export default function Agreement({ onAgreed }: AgreementProps) {
               value={isBuiltinKey ? '••••••••' : localKey}
               onChange={(e) => {
                 if (isBuiltinKey) {
-                  // 用户开始手动输入 → 退出内置密钥模式
                   setIsBuiltinKey(false)
                   setLocalKey(e.target.value)
                 } else {
@@ -363,13 +503,14 @@ export default function Agreement({ onAgreed }: AgreementProps) {
               }}
               readOnly={isBuiltinKey}
               placeholder="输入 API Key 后点击其他区域加载模型"
-              className={`w-full rounded-xl border px-3.5 py-2.5 text-sm outline-none transition-shadow ${isBuiltinKey
-                ? 'border-emerald-200 bg-emerald-50/50 text-emerald-700 cursor-default'
-                : 'border-rose-200/80 bg-white focus:ring-2 focus:ring-rose-300/60 focus:border-rose-300'
-                }`}
+              className={`w-full rounded-xl border px-3.5 py-2.5 text-sm outline-none transition-all duration-400 ${
+                isBuiltinKey
+                  ? 'border-emerald-200 bg-emerald-50/50 text-emerald-700 cursor-default'
+                  : 'border-rose-200/80 bg-white focus:ring-2 focus:ring-rose-300/60 focus:border-rose-300'
+              }`}
             />
             {isBuiltinKey && (
-              <p className="text-xs text-emerald-600 flex items-center gap-1">
+              <p className="text-xs text-emerald-600 flex items-center gap-1 animate-fadeInSoft">
                 <svg
                   className="w-3.5 h-3.5"
                   fill="none"
@@ -392,7 +533,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
                     setApiKey('')
                     setUnlockStatus('idle')
                   }}
-                  className="ml-1 text-emerald-500 hover:text-emerald-700 underline"
+                  className="ml-1 text-emerald-500 hover:text-emerald-700 underline transition-colors duration-300"
                 >
                   切换为手动输入
                 </button>
@@ -420,7 +561,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
                   <button
                     type="button"
                     onClick={() => setShowUnlock(true)}
-                    className="text-xs text-rose-500/70 hover:text-rose-700 transition-colors flex items-center gap-1"
+                    className="text-xs text-rose-500/70 hover:text-rose-700 transition-colors duration-300 flex items-center gap-1"
                   >
                     <svg
                       className="w-3 h-3"
@@ -447,36 +588,27 @@ export default function Agreement({ onAgreed }: AgreementProps) {
                         type="password"
                         value={devSecretInput}
                         onChange={(e) => {
-                          setDevSecretInput(
-                            e.target.value
-                          )
-                          if (
-                            unlockStatus === 'error'
-                          )
+                          setDevSecretInput(e.target.value)
+                          if (unlockStatus === 'error')
                             setUnlockStatus('idle')
                         }}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter')
-                            handleUnlock()
+                          if (e.key === 'Enter') handleUnlock()
                         }}
                         placeholder="开发者密钥"
-                        className="flex-1 rounded-lg border border-rose-200/80 bg-white px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-rose-300/60"
+                        className="flex-1 rounded-lg border border-rose-200/80 bg-white px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-rose-300/60 transition-all duration-300"
                       />
                       <button
                         type="button"
                         onClick={handleUnlock}
-                        disabled={
-                          unlockStatus === 'loading'
-                        }
-                        className="rounded-lg bg-rose-600 text-white px-3 py-1.5 text-xs font-medium hover:bg-rose-700 disabled:bg-rose-300 transition-colors whitespace-nowrap"
+                        disabled={unlockStatus === 'loading'}
+                        className="rounded-lg bg-rose-600 text-white px-3 py-1.5 text-xs font-medium hover:bg-rose-700 disabled:bg-rose-300 transition-colors duration-300 whitespace-nowrap"
                       >
-                        {unlockStatus === 'loading'
-                          ? '解密中…'
-                          : '解锁'}
+                        {unlockStatus === 'loading' ? '解密中…' : '解锁'}
                       </button>
                     </div>
                     {unlockStatus === 'error' && (
-                      <p className="text-xs text-red-500">
+                      <p className="text-xs text-red-500 animate-fadeInSoft">
                         密钥验证失败，请检查是否输入正确
                       </p>
                     )}
@@ -496,13 +628,11 @@ export default function Agreement({ onAgreed }: AgreementProps) {
                 value={apiModel}
                 onChange={(e) => handleModelChange(e.target.value)}
                 disabled={loadingModels}
-                className="w-full appearance-none rounded-xl border border-rose-200/80 bg-white px-3.5 py-2.5 pr-9 text-sm outline-none focus:ring-2 focus:ring-rose-300/60 focus:border-rose-300 disabled:bg-rose-50 disabled:text-rose-400 transition-shadow"
+                className="w-full appearance-none rounded-xl border border-rose-200/80 bg-white px-3.5 py-2.5 pr-9 text-sm outline-none focus:ring-2 focus:ring-rose-300/60 focus:border-rose-300 disabled:bg-rose-50 disabled:text-rose-400 transition-all duration-400"
               >
                 {chatModels.length === 0 && !loadingModels && (
                   <option value="">
-                    {apiKey
-                      ? '未获取到模型'
-                      : '请先输入 API Key'}
+                    {apiKey ? '未获取到模型' : '请先输入 API Key'}
                   </option>
                 )}
                 {loadingModels && (
@@ -541,9 +671,7 @@ export default function Agreement({ onAgreed }: AgreementProps) {
               </div>
             </div>
             {modelError && (
-              <p className="text-xs text-rose-500">
-                {modelError}
-              </p>
+              <p className="text-xs text-rose-500">{modelError}</p>
             )}
             <p className="text-xs text-rose-500/60">
               {chatModels.length > 0
@@ -554,124 +682,125 @@ export default function Agreement({ onAgreed }: AgreementProps) {
             </p>
           </div>
 
-          {/* 思维链设置 */}
-          <div className="space-y-1 rounded-xl border border-rose-100/60 bg-rose-50/30 p-4">
-            {provider === 'siliconflow' ? (
-              <>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-sm font-medium text-rose-900/80">
-                      深度思考
-                    </span>
-                    <span className="ml-1.5 text-xs text-rose-500/60">
-                      enable_thinking
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={enableThinking}
-                    onClick={() =>
-                      setEnableThinking(!enableThinking)
-                    }
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-rose-300 focus:ring-offset-2 ${enableThinking
-                      ? 'bg-rose-600'
-                      : 'bg-rose-200'
-                      }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${enableThinking
-                        ? 'translate-x-5'
-                        : 'translate-x-0'
-                        }`}
-                    />
-                  </button>
+          {/* 深度思考设置 — 仅在使用开发者密钥且为硅基流动时显示 */}
+          {isBuiltinKey && provider === 'siliconflow' && (
+            <div className="space-y-1 rounded-xl border border-rose-100/60 bg-rose-50/30 p-4 animate-slideDown">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-medium text-rose-900/80">
+                    深度思考
+                  </span>
+                  <span className="ml-1.5 text-xs text-rose-500/60">
+                    enable_thinking
+                  </span>
                 </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={enableThinking}
+                  onClick={() => setEnableThinking(!enableThinking)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-400 ease-in-out focus:outline-none focus:ring-2 focus:ring-rose-300 focus:ring-offset-2 ${
+                    enableThinking ? 'bg-rose-600' : 'bg-rose-200'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-400 ease-in-out ${
+                      enableThinking ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
 
-                {enableThinking && !modelSupportsThinking && (
-                  <p className="text-xs text-amber-600/80 bg-amber-50/60 rounded-lg px-2.5 py-1.5">
-                    当前模型可能不支持深度思考。已知支持的模型包括
-                    DeepSeek-V3.2、Qwen3 系列、GLM-4.7
-                    等，其他模型开启后 API
-                    可能会忽略该参数或返回错误。
-                  </p>
-                )}
+              {enableThinking && !modelSupportsThinking && (
+                <p className="text-xs text-amber-600/80 bg-amber-50/60 rounded-lg px-2.5 py-1.5 animate-fadeInSoft">
+                  当前模型可能不支持深度思考。已知支持的模型包括
+                  DeepSeek-V3.2、Qwen3 系列、GLM-4.7
+                  等，其他模型开启后 API
+                  可能会忽略该参数或返回错误。
+                </p>
+              )}
 
-                {enableThinking && (
-                  <div className="space-y-1.5 pt-1">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs text-rose-900/70">
-                        思考预算
-                        <span className="ml-1 text-rose-500/50">
-                          thinking_budget
-                        </span>
-                      </label>
-                      <span className="text-xs text-rose-700 tabular-nums font-medium">
-                        {thinkingBudget.toLocaleString()} tokens
+              {enableThinking && (
+                <div className="space-y-1.5 pt-1 animate-slideDown">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-rose-900/70">
+                      思考预算
+                      <span className="ml-1 text-rose-500/50">
+                        thinking_budget
                       </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={128}
-                      max={32768}
-                      step={128}
-                      value={thinkingBudget}
-                      onChange={(e) =>
-                        setThinkingBudget(
-                          Number(e.target.value)
-                        )
-                      }
-                      className="w-full h-1.5 bg-rose-200 rounded-full appearance-none cursor-pointer accent-rose-600 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-600 [&::-webkit-slider-thumb]:shadow-sm"
-                    />
-                    <div className="flex justify-between text-[10px] text-rose-400/70">
-                      <span>128</span>
-                      <span>4096</span>
-                      <span>16384</span>
-                      <span>32768</span>
-                    </div>
-                    <p className="text-xs text-rose-500/50">
-                      开启后模型会先进行推理思考再回答，可能提升题目质量，但会增加响应时间和
-                      token 消耗
-                    </p>
+                    </label>
+                    <span className="text-xs text-rose-700 tabular-nums font-medium">
+                      {thinkingBudget.toLocaleString()} tokens
+                    </span>
                   </div>
-                )}
-              </>
-            ) : (
-              <p className="text-xs text-rose-600/80">
-                OpenRouter 接入采用 `callModel` 模式，当前未暴露
-                `enable_thinking` 配置项。
-              </p>
-            )}
-          </div>
+                  <input
+                    type="range"
+                    min={128}
+                    max={32768}
+                    step={128}
+                    value={thinkingBudget}
+                    onChange={(e) =>
+                      setThinkingBudget(Number(e.target.value))
+                    }
+                    className="w-full h-1.5 bg-rose-200 rounded-full appearance-none cursor-pointer accent-rose-600 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-600 [&::-webkit-slider-thumb]:shadow-sm"
+                  />
+                  <div className="flex justify-between text-[10px] text-rose-400/70">
+                    <span>128</span>
+                    <span>4096</span>
+                    <span>16384</span>
+                    <span>32768</span>
+                  </div>
+                  <p className="text-xs text-rose-500/50">
+                    开启后模型会先进行推理思考再回答，可能提升题目质量，但会增加响应时间和
+                    token 消耗
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 开始按钮 */}
-        <div className="mt-4">
+        <div className="mt-5">
           <button
             disabled={!canProceed}
             onClick={onAgreed}
-            className="w-full sm:w-auto inline-flex items-center justify-center rounded-full bg-rose-600 text-white px-6 py-2.5 text-sm font-medium shadow-sm hover:bg-rose-700 active:bg-rose-800 disabled:bg-rose-300 disabled:cursor-not-allowed transition-colors"
+            className="w-full sm:w-auto inline-flex items-center justify-center rounded-full bg-rose-600 text-white px-6 py-2.5 text-sm font-medium shadow-sm hover:bg-rose-700 active:bg-rose-800 disabled:bg-rose-300 disabled:cursor-not-allowed transition-all duration-400"
           >
             我已阅读并同意，开始验证
           </button>
           <p className="mt-2 text-xs text-rose-900/40">
-            点击即表示你已同意上述内容
+            点击即表示你已同意上述协议内容
           </p>
         </div>
       </div>
 
+      {/* 协议弹窗 */}
+      <AgreementModal open={showModal} onClose={closeModal} />
+
       <style>{`
-                @keyframes fadeIn {
-                    from { opacity: 0; transform: translateY(12px); }
-                    to   { opacity: 1; transform: translateY(0); }
-                }
-                .animate-fadeIn { animation: fadeIn 0.5s ease-out both; }
-                @keyframes slideDown {
-                    from { opacity: 0; transform: translateY(-8px); }
-                    to   { opacity: 1; transform: translateY(0); }
-                }
-                .animate-slideDown { animation: slideDown 0.3s ease-out both; }
-            `}</style>
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(12px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeIn { animation: fadeIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+        @keyframes fadeInSoft {
+          from { opacity: 0; transform: translateY(4px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeInSoft { animation: fadeInSoft 0.6s ease-out both; }
+
+        @keyframes slideDown {
+          from { opacity: 0; max-height: 0; transform: translateY(-8px); }
+          to   { opacity: 1; max-height: 500px; transform: translateY(0); }
+        }
+        .animate-slideDown { animation: slideDown 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+        .custom-modal-scroll::-webkit-scrollbar { width: 4px; }
+        .custom-modal-scroll::-webkit-scrollbar-track { background: transparent; }
+        .custom-modal-scroll::-webkit-scrollbar-thumb { background: #fecdd3; border-radius: 2px; }
+      `}</style>
     </div>
   )
 }

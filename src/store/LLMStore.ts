@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 import { OpenRouter } from '@openrouter/sdk'
-import { dbg, dbgGroup, dbgGroupEnd, dbgWarn, dbgTime, dbgTimeEnd } from '../utils/debug'
+import {
+    dbg,
+    dbgGroup,
+    dbgGroupEnd,
+    dbgWarn,
+    dbgTime,
+    dbgTimeEnd,
+} from '../utils/debug'
 
 type ChatRole = 'system' | 'user' | 'assistant'
 export type LLMProvider = 'siliconflow' | 'openrouter'
@@ -57,6 +64,7 @@ type SiliconFlowModelsResponse =
  * @see https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions#body-one-of-0-enable-thinking
  */
 export const THINKING_SUPPORTED_MODELS: string[] = [
+    'Pro/zai-org/GLM-5',
     'Pro/zai-org/GLM-4.7',
     'deepseek-ai/DeepSeek-V3.2',
     'Pro/deepseek-ai/DeepSeek-V3.2',
@@ -125,7 +133,9 @@ function tryParseJson(content: string, jsonMode?: boolean): unknown {
     }
 }
 
-function extractReasoningFromOpenRouterResponse(response: unknown): string | undefined {
+function extractReasoningFromOpenRouterResponse(
+    response: unknown
+): string | undefined {
     if (!response || typeof response !== 'object') return undefined
     const output = (response as { output?: unknown }).output
     if (!Array.isArray(output)) return undefined
@@ -303,7 +313,10 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
             set({ llmModelList: names })
 
             const currentModel = get().apiModel
-            if (names.length > 0 && (!currentModel || !names.includes(currentModel))) {
+            if (
+                names.length > 0 &&
+                (!currentModel || !names.includes(currentModel))
+            ) {
                 set({ apiModel: names[0] })
             }
         } catch (e) {
@@ -322,10 +335,7 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
     streamingReasoning: '',
     streamingPhase: '',
 
-    request: async (
-        messages: ChatMessage[],
-        options?: LLMRequestOptions
-    ) => {
+    request: async (messages: ChatMessage[], options?: LLMRequestOptions) => {
         const {
             apiUrl,
             apiKey,
@@ -334,7 +344,7 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
             enableThinking,
             thinkingBudget,
         } = get()
-        const useStreaming = __DEBUG__
+        const useStreaming = true
 
         // 清空流式状态
         set({
@@ -398,12 +408,14 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
 
                     const parsed = tryParseJson(content, options?.jsonMode)
                     const reasoningContent =
-                        reasoning || extractReasoningFromOpenRouterResponse(response)
+                        reasoning ||
+                        extractReasoningFromOpenRouterResponse(response)
 
                     dbgTimeEnd('LLM 请求耗时')
                     dbgGroup('OpenRouter 流式响应完成')
                     dbg('content 长度:', content.length)
-                    if (reasoningContent) dbg('reasoning 长度:', reasoningContent.length)
+                    if (reasoningContent)
+                        dbg('reasoning 长度:', reasoningContent.length)
                     if (content.length < 2000) dbg('content:', content)
                     dbgGroupEnd()
 
@@ -420,7 +432,8 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
                     result.getResponse(),
                 ])
                 content = text || ''
-                reasoning = extractReasoningFromOpenRouterResponse(response) || ''
+                reasoning =
+                    extractReasoningFromOpenRouterResponse(response) || ''
 
                 dbgTimeEnd('LLM 请求耗时')
                 dbgGroup('OpenRouter 非流式响应')
@@ -482,7 +495,10 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
             if (useStreaming && resp.ok && resp.body) {
                 const sseResult = await parseSSEStream(
                     resp,
-                    ({ content: streamedContent, reasoning: streamedReasoning }) => {
+                    ({
+                        content: streamedContent,
+                        reasoning: streamedReasoning,
+                    }) => {
                         set({
                             streamingText: streamedContent,
                             streamingReasoning: streamedReasoning,
@@ -528,7 +544,8 @@ export const useLLMStore = create<LLMStore>((set, get) => ({
             dbgGroup('LLM 非流式响应')
             dbg('content 长度:', content.length)
             if (content.length < 2000) dbg('content:', content)
-            if (reasoningContent) dbg('reasoning 长度:', reasoningContent.length)
+            if (reasoningContent)
+                dbg('reasoning 长度:', reasoningContent.length)
             dbg('usage:', data?.usage)
             dbgGroupEnd()
 
